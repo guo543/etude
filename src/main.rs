@@ -1,26 +1,18 @@
-mod ast;
-mod interpreter;
-mod lexer;
-mod parser;
-
-use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
-use interpreter::Interpreter;
-use lexer::Lexer;
-use parser::Parser;
+use etude::interpreter;
+use etude::lexer::Lexer;
+use etude::parser::Parser;
 
 /// Lex, parse and evaluate one line of input.
-fn run(input: &str, env: &HashMap<String, i32>) -> Result<i32, String> {
-    let lexer = Lexer::new(input).map_err(|e| format!("Lexer: {e}"))?;
-    let ast = Parser::new(lexer)
+fn run(input: &str) -> Result<i64, String> {
+    let ast = Parser::new(Lexer::new(input))
         .parse()
         .map_err(|e| format!("Parser: {e}"))?;
-    Interpreter::eval(&ast, env).map_err(|e| format!("Eval: {e}"))
+    interpreter::eval(&ast).map_err(|e| format!("Eval: {e}"))
 }
 
 fn main() {
-    let env = HashMap::<String, i32>::new();
     let stdin = io::stdin();
 
     loop {
@@ -35,7 +27,7 @@ fn main() {
             continue;
         }
 
-        match run(&line, &env) {
+        match run(&line) {
             Ok(value) => println!("{value}"),
             Err(msg) => eprintln!("{msg}"),
         }
@@ -45,18 +37,10 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::run;
-    use crate::lexer::*;
     use std::assert_matches;
-    use std::collections::HashMap;
 
-    fn eval(input: &str) -> Result<i32, String> {
-        run(input, &HashMap::new())
-    }
-
-    #[test]
-    fn test_lexer_creation() {
-        let input = "";
-        assert_matches!(Lexer::new(input), Ok(_));
+    fn eval(input: &str) -> Result<i64, String> {
+        run(input)
     }
 
     #[test]
@@ -70,8 +54,8 @@ mod test {
     #[test]
     fn test_errors() {
         assert_matches!(eval("1 / (2 - 2)"), Err(msg) if msg.contains("Division by zero"));
-        assert_matches!(eval("2147483647 + 1"), Err(msg) if msg.contains("overflow"));
+        assert_matches!(eval("9223372036854775807 + 1"), Err(msg) if msg.contains("overflow"));
         assert_matches!(eval("1 2"), Err(msg) if msg.starts_with("Parser"));
-        assert_matches!(eval("1 $ 2"), Err(msg) if msg.contains("Unknown character"));
+        assert_matches!(eval("1 $ 2"), Err(msg) if msg.contains("Unexpected char"));
     }
 }

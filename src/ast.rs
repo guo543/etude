@@ -1,7 +1,8 @@
 use std::fmt;
 
-use crate::lexer::Token;
+use crate::lexer::TokenKind;
 
+#[derive(Debug)]
 pub enum Op {
     Add,
     Sub,
@@ -11,12 +12,12 @@ pub enum Op {
 
 impl Op {
     /// The binary operator for this token, if it is one.
-    pub fn from_token(tok: &Token) -> Option<Op> {
+    pub fn from_token(tok: &TokenKind) -> Option<Op> {
         match tok {
-            Token::Add => Some(Op::Add),
-            Token::Sub => Some(Op::Sub),
-            Token::Mul => Some(Op::Mul),
-            Token::Div => Some(Op::Div),
+            TokenKind::Plus => Some(Op::Add),
+            TokenKind::Minus => Some(Op::Sub),
+            TokenKind::Star => Some(Op::Mul),
+            TokenKind::Slash => Some(Op::Div),
             _ => None,
         }
     }
@@ -41,8 +42,9 @@ impl fmt::Display for Op {
     }
 }
 
+#[derive(Debug)]
 pub enum AstNode {
-    Int(i32),
+    Int(i64),
     Binary(Op, Box<AstNode>, Box<AstNode>),
 }
 
