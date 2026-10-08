@@ -33,34 +33,35 @@ impl fmt::Display for BinOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ident {
     pub name: String,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Let { id: Ident, init: Expr },
     ExprStmt(Expr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
     Var(String),
+    Call { callee: Box<Expr>, args: Vec<Expr> },
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Block { stmts: Vec<Stmt>, tail: Box<Expr> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -93,6 +94,16 @@ impl Expr {
     pub fn var(s: String, start: usize, end: usize) -> Self {
         Expr {
             kind: ExprKind::Var(s),
+            span: Span { start, end },
+        }
+    }
+
+    pub fn call(callee: Expr, args: Vec<Expr>, start: usize, end: usize) -> Self {
+        Expr {
+            kind: ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
             span: Span { start, end },
         }
     }
@@ -136,6 +147,16 @@ impl fmt::Display for Expr {
         match &self.kind {
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Var(s) => write!(f, "{s}"),
+            ExprKind::Call { callee, args } => {
+                write!(f, "{}(", callee)?;
+                for (i, arg) in args.iter().enumerate() {
+                    write!(f, "{arg}")?;
+                    if i != args.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
+            }
             ExprKind::Unary(op, expr) => write!(f, "({op} {expr})"),
             ExprKind::Binary(op, lhs, rhs) => write!(f, "({lhs} {op} {rhs})"),
             ExprKind::Block { stmts, tail } => {
@@ -180,12 +201,14 @@ impl fmt::Display for Decl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             DeclKind::FunDecl { id, params, body } => {
-                let param_list = params
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                write!(f, "DEF {} ({param_list}) = {body}", id.name)
+                write!(f, "DEF {} (", id.name)?;
+                for (i, param) in params.iter().enumerate() {
+                    write!(f, "{}", param.name)?;
+                    if i != params.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ") = {body}")
             }
         }
     }

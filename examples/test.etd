@@ -1,0 +1,7 @@
+
+def f (a) = a + 100;
+
+def main() = {
+    let x_a = 200;
+    f(x_a) + 2
+};

@@ -1,0 +1,4 @@
+def main() = {
+    let a = { let b = 1; b };
+    b
+};

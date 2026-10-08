@@ -215,6 +215,30 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn parse_call(&mut self) -> Result<Expr, ParserError> {
+        let mut expr = self.parse_atom()?;
+
+        while self.peek_is(TokenKind::LParen) {
+            self.bump();
+            let start = expr.span.start;
+            let mut args = Vec::new();
+            if !self.peek_is(TokenKind::RParen) {
+                loop {
+                    let arg = self.parse_expr()?;
+                    args.push(arg);
+                    if self.peek_is(TokenKind::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let end = self.expect(TokenKind::RParen)?.end;
+            expr = Expr::call(expr, args, start, end)
+        }
+        Ok(expr)
+    }
+
     fn parse_unary(&mut self) -> Result<Expr, ParserError> {
         if let Some(op) = Self::unary_op(self.token.kind) {
             let start = self.token.span.start;
@@ -223,7 +247,7 @@ impl<'src> Parser<'src> {
             let end = expr.span.end;
             Ok(Expr::unary(op, expr, start, end))
         } else {
-            self.parse_atom()
+            self.parse_call()
         }
     }
 
@@ -361,6 +385,97 @@ mod test {
     fn variables() {
         assert_eq!(ast("x"), "x");
         assert_eq!(ast("x + y * 2"), "(x + (y * 2))");
+    }
+
+    #[test]
+    fn calls() {
+        assert_eq!(ast("f()"), "f()");
+        assert_eq!(ast("f(1)"), "f(1)");
+        assert_eq!(ast("f(1, 2, 3)"), "f(1, 2, 3)");
+        assert_eq!(ast("f (1)"), "f(1)");
+        assert_eq!(ast("f(g(1), h())"), "f(g(1), h())");
+        assert_eq!(ast("f({ 1 }, 2 + 3)"), "f(BLOCK: { 1 }, (2 + 3))");
+    }
+
+    #[test]
+    fn calls_bind_tighter_than_operators() {
+        assert_eq!(ast("1 + f(2) * 3"), "(1 + (f(2) * 3))");
+        assert_eq!(ast("f(1) - g(2)"), "(f(1) - g(2))");
+        assert_eq!(ast("-f(1)"), "(- f(1))");
+        assert_eq!(ast("-f(1)(2)"), "(- f(1)(2))");
+    }
+
+    #[test]
+    fn chained_calls() {
+        assert_eq!(ast("f(1)(2)"), "f(1)(2)");
+        assert_eq!(ast("f()()()"), "f()()()");
+
+        // The outer call's callee is the inner call.
+        let src = "f(1)(2)";
+        let expr = parse(src).unwrap();
+        let ExprKind::Call { callee, args } = &expr.kind else {
+            panic!("expected a call, got {expr}");
+        };
+        assert!(matches!(callee.kind, ExprKind::Call { .. }));
+        assert_eq!(text(src, callee.span), "f(1)");
+        assert_eq!(text(src, args[0].span), "2");
+    }
+
+    #[test]
+    fn any_expression_can_be_called() {
+        assert_eq!(ast("(f)(1)"), "f(1)");
+        assert_eq!(ast("{ f }(1)"), "BLOCK: { f }(1)");
+    }
+
+    #[test]
+    fn call_spans() {
+        let src = "1 + f(2, x * 3)";
+        let expr = parse(src).unwrap();
+        let ExprKind::Binary(_, _, call) = &expr.kind else {
+            panic!("expected a binary expression, got {expr}");
+        };
+        assert_eq!(text(src, call.span), "f(2, x * 3)");
+        let ExprKind::Call { callee, args } = &call.kind else {
+            panic!("expected a call, got {call}");
+        };
+        assert_eq!(text(src, callee.span), "f");
+        let arg_texts: Vec<_> = args.iter().map(|a| text(src, a.span)).collect();
+        assert_eq!(arg_texts, ["2", "x * 3"]);
+
+        let src = "(f)(1)";
+        assert_eq!(text(src, parse(src).unwrap().span), "(f)(1)");
+    }
+
+    #[test]
+    fn call_errors() {
+        // No trailing comma, no empty argument.
+        for (src, expected, actual) in [
+            ("f(1,)", Expected::Expression, TokenKind::RParen),
+            ("f(,)", Expected::Expression, TokenKind::Comma),
+            ("f(", Expected::Expression, TokenKind::Eof),
+            ("f(1 2)", Expected::Token(TokenKind::RParen), TokenKind::Int),
+            ("f(1", Expected::Token(TokenKind::RParen), TokenKind::Eof),
+            ("f(1)(", Expected::Expression, TokenKind::Eof),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ParserError::UnexpectedToken { expected: e, actual: a, .. }
+                        if e == expected && a == actual
+                ),
+                "input: {src:?}, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn calls_in_programs() {
+        let src = "def add(a, b) = a + b; def main() = add(1, add(2, 3));";
+        assert_eq!(
+            parse_program(src).unwrap().to_string(),
+            "AST:\nDEF add (a, b) = (a + b)\nDEF main () = add(1, add(2, 3))\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,5 @@
+def square(x) = x * x;
+
+def sum_of_squares(a, b) = square(a) + square(b);
+
+def main() = sum_of_squares(3, 4);

@@ -24,9 +24,7 @@ runs and is tested.
 - [x] `def` ends with `;`, as in `grammar.ebnf`: every definition, at the
       top level or in a block, ends with `;`.
 - [x] Derive `Clone, Copy, PartialEq, Eq` on `UnOp`, like `BinOp`.
-- [ ] Consider `ExprKind::Var(Ident)` so variables carry an `Ident` like
-      `let` and parameters do.
-- [ ] Replace the stale end-to-end tests in `main.rs` (see step 2).
+- [x] Replace the stale end-to-end tests in `main.rs` (see step 2).
 
 ## 2. Interpreter v1: run `main`
 
@@ -44,8 +42,10 @@ Evaluate what the parser already produces.
 - [ ] Errors carry the span of the expression that caused them.
 - [ ] Report parse and eval errors with **ariadne** (file name and underlined
       source line). Remember `IndexType::Byte`: spans are byte offsets.
-- [ ] `examples/` folder of `.etd` programs with expected output, and an
-      end-to-end test that runs each one.
+- [x] `examples/` folder of `.etd` programs with expected output, and an
+      end-to-end test that runs each one (`tests/examples.rs`): `NAME.etd`
+      with `NAME.out` must succeed, `errors/NAME.etd` with `NAME.err` must
+      fail with that message.
 
 ## 3. Function calls
 

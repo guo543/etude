@@ -1,0 +1,5 @@
+def twice(f, x) = f(f(x));
+
+def inc(x) = x + 1;
+
+def main() = twice(inc, 5);

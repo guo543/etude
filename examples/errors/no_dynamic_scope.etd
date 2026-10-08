@@ -1,0 +1,6 @@
+def f() = y;
+
+def main() = {
+    let y = 1;
+    f()
+};
