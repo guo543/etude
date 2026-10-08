@@ -270,7 +270,7 @@ impl<'src> Parser<'src> {
         self.expect(TokenKind::Eq)?;
 
         let body = self.parse_expr()?;
-        let end = body.span.end;
+        let end = self.expect(TokenKind::SemiColon)?.end;
         Ok(Decl::function(id, params, body, start, end))
     }
 
@@ -581,7 +581,7 @@ mod test {
 
     #[test]
     fn functions() {
-        let src = "def main() = 1 def add(a, b) = a + b";
+        let src = "def main() = 1; def add(a, b) = a + b;";
         assert_eq!(
             parse_program(src).unwrap().to_string(),
             "AST:\nDEF main () = 1\nDEF add (a, b) = (a + b)\n"
@@ -590,7 +590,7 @@ mod test {
 
     #[test]
     fn function_parameters_and_spans() {
-        let src = "def f(x, yy, zzz) = { x }";
+        let src = "def f(x, yy, zzz) = { x };";
         let ast = parse_program(src).unwrap();
         let DeclKind::FunDecl { id, params, body } = &ast.decls[0].kind;
         assert_eq!(id.name, "f");
@@ -620,7 +620,7 @@ mod test {
             })
         ));
         assert!(matches!(
-            parse_program("def f() = 1 let x = 2;"),
+            parse_program("def f() = 1; let x = 2;"),
             Err(ParserError::UnexpectedToken {
                 expected: Expected::Token(TokenKind::Def),
                 actual: TokenKind::Let,
@@ -673,6 +673,29 @@ mod test {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn def_requires_semicolon() {
+        for (src, actual) in [
+            ("def f() = 1", TokenKind::Eof),
+            ("def f() = 1 def g() = 2;", TokenKind::Def),
+            ("def f() = { 1 }", TokenKind::Eof),
+            ("def f() = 1 2;", TokenKind::Int),
+        ] {
+            assert!(
+                matches!(
+                    parse_program(src),
+                    Err(ParserError::UnexpectedToken {
+                        expected: Expected::Token(TokenKind::SemiColon),
+                        actual: a,
+                        ..
+                    }) if a == actual
+                ),
+                "input: {src:?}"
+            );
+        }
+        assert_eq!(parse_program("def f() = { 1 };").unwrap().decls.len(), 1);
     }
 
     #[test]
