@@ -1,1 +1,7 @@
-Eval: Cannot divide by zero at 13..24
+Error: division by zero
+   ╭─[ examples/errors/division_by_zero.etd:1:18 ]
+   │
+ 1 │ def main() = 1 / (2 - 2);
+   │                  ───┬───
+   │                     ╰───── this is zero
+───╯

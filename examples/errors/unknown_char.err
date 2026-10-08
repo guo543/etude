@@ -1,1 +1,7 @@
-Parser: Unexpected char at 15..16
+Error: unknown character `$`
+   ╭─[ examples/errors/unknown_char.etd:1:16 ]
+   │
+ 1 │ def main() = 1 $ 2;
+   │                ┬
+   │                ╰── not part of the language
+───╯

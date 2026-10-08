@@ -1,0 +1,1 @@
+def main(argc, argv) = argc;

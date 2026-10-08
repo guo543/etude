@@ -1,1 +1,7 @@
-Eval: Unbound identifier at 10..11
+Error: cannot find `y` in this scope
+   ╭─[ examples/errors/no_dynamic_scope.etd:1:11 ]
+   │
+ 1 │ def f() = y;
+   │           ┬
+   │           ╰── not found in this scope
+───╯

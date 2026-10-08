@@ -28,27 +28,30 @@ pub enum TokenKind {
     Eof,
 }
 
+/// How the token is named in error messages, e.g. "expected `;`, found
+/// end of input". Use `{:?}` for the variant name when debugging.
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            TokenKind::Int => write!(f, "<int>"),
-            TokenKind::Ident => write!(f, "<id>"),
-            TokenKind::Let => write!(f, "<let>"),
-            TokenKind::Def => write!(f, "<def>"),
-            TokenKind::Eq => write!(f, "<=>"),
-            TokenKind::Plus => write!(f, "<+>"),
-            TokenKind::Minus => write!(f, "<->"),
-            TokenKind::Star => write!(f, "<*>"),
-            TokenKind::Slash => write!(f, "</>"),
-            TokenKind::Comma => write!(f, "<,>"),
-            TokenKind::SemiColon => write!(f, "<;>"),
-            TokenKind::LParen => write!(f, "<(>"),
-            TokenKind::RParen => write!(f, "<)>"),
-            TokenKind::LBrace => write!(f, "<{{>"),
-            TokenKind::RBrace => write!(f, "<}}>"),
-            TokenKind::Unknown => write!(f, "<unknown>"),
-            TokenKind::Eof => write!(f, "<eof>"),
-        }
+        let text = match self {
+            TokenKind::Int => "an integer",
+            TokenKind::Ident => "an identifier",
+            TokenKind::Let => "`let`",
+            TokenKind::Def => "`def`",
+            TokenKind::Eq => "`=`",
+            TokenKind::Plus => "`+`",
+            TokenKind::Minus => "`-`",
+            TokenKind::Star => "`*`",
+            TokenKind::Slash => "`/`",
+            TokenKind::Comma => "`,`",
+            TokenKind::SemiColon => "`;`",
+            TokenKind::LParen => "`(`",
+            TokenKind::RParen => "`)`",
+            TokenKind::LBrace => "`{`",
+            TokenKind::RBrace => "`}`",
+            TokenKind::Unknown => "an unknown character",
+            TokenKind::Eof => "end of input",
+        };
+        f.write_str(text)
     }
 }
 
@@ -387,23 +390,23 @@ mod test {
     #[test]
     fn token_kind_display() {
         let cases = [
-            (Int, "<int>"),
-            (Ident, "<id>"),
-            (Let, "<let>"),
-            (Eq, "<=>"),
-            (Plus, "<+>"),
-            (Minus, "<->"),
-            (Star, "<*>"),
-            (Slash, "</>"),
-            (Comma, "<,>"),
-            (SemiColon, "<;>"),
-            (LParen, "<(>"),
-            (RParen, "<)>"),
-            (LBrace, "<{>"),
-            (RBrace, "<}>"),
-            (Def, "<def>"),
-            (Unknown, "<unknown>"),
-            (Eof, "<eof>"),
+            (Int, "an integer"),
+            (Ident, "an identifier"),
+            (Let, "`let`"),
+            (Def, "`def`"),
+            (Eq, "`=`"),
+            (Plus, "`+`"),
+            (Minus, "`-`"),
+            (Star, "`*`"),
+            (Slash, "`/`"),
+            (Comma, "`,`"),
+            (SemiColon, "`;`"),
+            (LParen, "`(`"),
+            (RParen, "`)`"),
+            (LBrace, "`{`"),
+            (RBrace, "`}`"),
+            (Unknown, "an unknown character"),
+            (Eof, "end of input"),
         ];
         for (kind, expected) in cases {
             assert_eq!(kind.to_string(), expected);

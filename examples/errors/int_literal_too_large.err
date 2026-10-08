@@ -1,1 +1,9 @@
-Parser: Integer literal at 13..33 is too large for i64
+Error: integer literal is too large
+   ╭─[ examples/errors/int_literal_too_large.etd:1:14 ]
+   │
+ 1 │ def main() = 99999999999999999999;
+   │              ──────────┬─────────
+   │                        ╰─────────── does not fit in an `i64`
+   │
+   │ Note: the largest integer is 9223372036854775807
+───╯

@@ -1,0 +1,3 @@
+Error: no `main` function
+  in examples/errors/missing_main.etd
+  Note: a program starts by calling `def main() = ...;`

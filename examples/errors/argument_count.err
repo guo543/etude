@@ -1,1 +1,7 @@
-Eval: Argument number mismatch at 28..35: expected 1 but got 2
+Error: wrong number of arguments
+   ╭─[ examples/errors/argument_count.etd:3:14 ]
+   │
+ 3 │ def main() = f(1, 2);
+   │              ───┬───
+   │                 ╰───── expected 1 argument, found 2
+───╯

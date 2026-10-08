@@ -13,9 +13,12 @@ runs and is tested.
   Tokens: `+ - * / = , ; ( ) { }`, `let`, `def`, identifiers, integers.
 - **Parser:** a program of `def` items; blocks with `let` and expression
   statements; unary minus; binary `+ - * /` with precedence in the parser;
-  every node has a span.
-- **Interpreter:** not wired up. `main.rs` prints the AST and returns a
-  placeholder.
+  calls `f(a)(b)` on any expression; every node has a span.
+- **Interpreter:** a tree walker over the AST. Runs `main`; functions are
+  values; integers with overflow and division checks.
+- **Errors:** reported with ariadne (`src/diagnostic.rs`): headline, file,
+  underlined source.
+- **CLI:** `etude [--ast] <file>`; `--ast` prints the parsed program first.
 
 ---
 
@@ -30,33 +33,36 @@ runs and is tested.
 
 Evaluate what the parser already produces.
 
-- [ ] Expressions: `Int`, `Var`, `Unary` (`checked_neg`), `Binary` (checked
+- [x] Expressions: `Int`, `Var`, `Unary` (`checked_neg`), `Binary` (checked
       arithmetic, division by zero), `Block` with `let` and expression
       statements.
-- [ ] Scopes: a stack of `HashMap<String, i64>`. A block pushes a scope and
+- [x] Scopes: a stack of `HashMap<String, Value>`. A block pushes a scope and
       pops it at the end; `let` inserts into the top scope, and a later `let`
       with the same name shadows the earlier one. A name not in any scope is
       an "unbound variable" error.
-- [ ] Programs: find `def main()`; report an error if it is missing or has
+- [x] Programs: find `def main()`; report an error if it is missing or has
       parameters; evaluate its body and print the result.
-- [ ] Errors carry the span of the expression that caused them.
-- [ ] Report parse and eval errors with **ariadne** (file name and underlined
+- [x] Errors carry the span of the expression that caused them.
+- [x] Report parse and eval errors with **ariadne** (file name and underlined
       source line). Remember `IndexType::Byte`: spans are byte offsets.
+      All of it lives in `src/diagnostic.rs`. Each error's `Display` is the
+      headline, and `diagnostic()` adds the location, label and notes.
 - [x] `examples/` folder of `.etd` programs with expected output, and an
       end-to-end test that runs each one (`tests/examples.rs`): `NAME.etd`
       with `NAME.out` must succeed, `errors/NAME.etd` with `NAME.err` must
-      fail with that message.
+      fail with that message. `BLESS=1 cargo test --test examples` rewrites
+      the expected files.
 
 ## 3. Function calls
 
-- [ ] Parser: a postfix loop after atoms for `f(a, b)`, and a
-      `parse_comma_list` helper shared by arguments and parameters.
-- [ ] AST: `Call { callee: Box<Expr>, args: Vec<Expr> }`, not
+- [x] Parser: a postfix loop after atoms for `f(a, b)`.
+- [ ] A `parse_comma_list` helper shared by arguments and parameters.
+- [x] AST: `Call { callee: Box<Expr>, args: Vec<Expr> }`, not
       `Call { name, .. }`, so it still fits when functions become values.
-- [ ] Interpreter: collect all `def`s by name before running, so their order
+- [x] Interpreter: collect all `def`s by name before running, so their order
       does not matter. Each call gets a fresh scope with parameters bound to
       the arguments.
-- [ ] Check the argument count.
+- [x] Check the argument count.
 - [ ] Call-depth limit, so deep recursion is an error, not a stack overflow.
 
 ## 4. Booleans, comparisons and `if`

@@ -1,0 +1,7 @@
+Error: expected an expression, found end of input
+   ╭─[ examples/errors/unexpected_end.etd:3:8 ]
+   │
+ 3 │     x +
+   │        │
+   │        ╰─ expected an expression
+───╯

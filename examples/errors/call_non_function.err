@@ -1,1 +1,7 @@
-Eval: Type mismatch at  34..38: expected fun but got int
+Error: mismatched types
+   ╭─[ examples/errors/call_non_function.etd:3:5 ]
+   │
+ 3 │     x(2)
+   │     ┬
+   │     ╰── expected `fun`, found `int`
+───╯

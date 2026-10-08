@@ -1,4 +1,5 @@
 use crate::ast::{Ast, BinOp, Decl, Expr, Ident, Stmt, UnOp};
+use crate::diagnostic::Diagnostic;
 use crate::lexer::{Lexer, Token, TokenKind};
 use crate::span::Span;
 use std::fmt;
@@ -11,6 +12,7 @@ pub enum Expected {
     Expression,
 }
 
+/// How it is named in error messages, e.g. "expected an expression".
 impl fmt::Display for Expected {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -23,7 +25,7 @@ impl fmt::Display for Expected {
 #[derive(Debug)]
 pub enum ParserError {
     /// The lexer found a character that cannot start a token.
-    UnknownChar { span: Span },
+    UnknownChar { ch: char, span: Span },
     /// An integer literal that does not fit in an `i64`.
     InvalidInt { kind: IntErrorKind, span: Span },
     UnexpectedToken {
@@ -36,35 +38,52 @@ pub enum ParserError {
 impl ParserError {
     pub fn span(&self) -> Span {
         match self {
-            ParserError::UnknownChar { span }
+            ParserError::UnknownChar { span, .. }
             | ParserError::InvalidInt { span, .. }
             | ParserError::UnexpectedToken { span, .. } => *span,
         }
     }
 }
 
-impl std::error::Error for ParserError {}
-
+/// The headline of the error; `diagnostic` adds the location and details.
 impl fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ParserError::UnknownChar { span } => {
-                write!(f, "Unexpected char at {span}")
-            }
-            ParserError::InvalidInt { kind, span } => match kind {
-                IntErrorKind::PosOverflow => {
-                    write!(f, "Integer literal at {span} is too large for i64")
-                }
-                _ => write!(f, "Invalid integer literal at {span}"),
-            },
+            ParserError::UnknownChar { ch, .. } => write!(f, "unknown character `{ch}`"),
+            ParserError::InvalidInt {
+                kind: IntErrorKind::PosOverflow,
+                ..
+            } => write!(f, "integer literal is too large"),
+            ParserError::InvalidInt { .. } => write!(f, "invalid integer literal"),
             ParserError::UnexpectedToken {
-                expected,
-                actual,
-                span,
-            } => write!(
-                f,
-                "Unexpected token at {span}: expected {expected} but got {actual}"
-            ),
+                expected, actual, ..
+            } => write!(f, "expected {expected}, found {actual}"),
+        }
+    }
+}
+
+impl ParserError {
+    /// The error as a report for the user: the `Display` headline plus where
+    /// it happened and what to say there.
+    pub fn diagnostic(&self) -> Diagnostic {
+        let label = match self {
+            ParserError::UnknownChar { .. } => "not part of the language".to_owned(),
+            ParserError::InvalidInt {
+                kind: IntErrorKind::PosOverflow,
+                ..
+            } => "does not fit in an `i64`".to_owned(),
+            ParserError::InvalidInt { .. } => "numbers can only contain digits".to_owned(),
+            ParserError::UnexpectedToken { expected, .. } => {
+                format!("expected {expected}")
+            }
+        };
+        let diagnostic = Diagnostic::new(self.to_string(), self.span(), label);
+        match self {
+            ParserError::InvalidInt {
+                kind: IntErrorKind::PosOverflow,
+                ..
+            } => diagnostic.with_note(format!("the largest integer is {}", i64::MAX)),
+            _ => diagnostic,
         }
     }
 }
@@ -76,12 +95,19 @@ pub struct Parser<'src> {
     lexer: Lexer<'src>,
     /// The token being looked at. `Eof` once the input runs out.
     token: Token,
+    /// Where the previous token ended. Errors at the end of input point
+    /// here, right after the last real token, not past trailing whitespace.
+    prev_end: usize,
 }
 
 impl<'src> Parser<'src> {
     pub fn new(mut lexer: Lexer<'src>) -> Self {
         let token = lexer.next_token();
-        Parser { lexer, token }
+        Parser {
+            lexer,
+            token,
+            prev_end: 0,
+        }
     }
 
     fn text(&self, span: Span) -> &'src str {
@@ -108,6 +134,7 @@ impl<'src> Parser<'src> {
     }
 
     fn bump(&mut self) {
+        self.prev_end = self.token.span.end;
         self.token = self.lexer.next_token();
     }
 
@@ -131,7 +158,19 @@ impl<'src> Parser<'src> {
     fn unexpected(&self, expected: Expected) -> ParserError {
         let Token { kind, span } = self.token;
         match kind {
-            TokenKind::Unknown => ParserError::UnknownChar { span },
+            TokenKind::Unknown => ParserError::UnknownChar {
+                // An `Unknown` token is exactly one character.
+                ch: self.text(span).chars().next().unwrap_or_default(),
+                span,
+            },
+            TokenKind::Eof => ParserError::UnexpectedToken {
+                expected,
+                actual: kind,
+                span: Span {
+                    start: self.prev_end,
+                    end: self.prev_end,
+                },
+            },
             actual => ParserError::UnexpectedToken {
                 expected,
                 actual,
@@ -556,7 +595,7 @@ mod test {
         ] {
             let err = parse(src).unwrap_err();
             assert!(
-                matches!(err, ParserError::UnknownChar { span } if span.start == start),
+                matches!(err, ParserError::UnknownChar { ch: '$', span } if span.start == start),
                 "input: {src:?}, got: {err:?}"
             );
             assert_eq!(text(src, err.span()), "$");
@@ -819,8 +858,9 @@ mod test {
             ("1 + $", Span { start: 4, end: 5 }), // unknown char
             ("99999999999999999999", Span { start: 0, end: 20 }), // invalid int
             ("1 2", Span { start: 2, end: 3 }),   // unexpected token
-            ("1 +  ", Span { start: 5, end: 5 }), // eof, after trailing whitespace
-            ("(1\n", Span { start: 3, end: 3 }),  // eof, after a trailing newline
+            // At end of input, the error points right after the last token.
+            ("1 +  ", Span { start: 3, end: 3 }), // eof, before trailing whitespace
+            ("(1\n\n", Span { start: 2, end: 2 }), // eof, before trailing newlines
         ];
         for (src, expected) in cases {
             assert_eq!(parse(src).unwrap_err().span(), expected, "input: {src:?}");
@@ -828,22 +868,44 @@ mod test {
     }
 
     #[test]
-    fn error_display_includes_span() {
+    fn error_display_is_the_headline() {
+        let cases = [
+            ("1 2", "expected end of input, found an integer"),
+            ("1 +", "expected an expression, found end of input"),
+            ("(1 2", "expected `)`, found an integer"),
+            ("1 $", "unknown character `$`"),
+            ("99999999999999999999", "integer literal is too large"),
+            ("123abc", "invalid integer literal"),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(
+                parse(src).unwrap_err().to_string(),
+                expected,
+                "input: {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics() {
+        let src = "1 $ 2";
+        let diag = parse(src).unwrap_err().diagnostic();
+        assert_eq!(diag.message, "unknown character `$`");
         assert_eq!(
-            parse("1 2").unwrap_err().to_string(),
-            "Unexpected token at 2..3: expected <eof> but got <int>"
+            diag.label,
+            Some((Span { start: 2, end: 3 }, "not part of the language".into()))
         );
+
+        let src = "{ 1";
+        let diag = parse(src).unwrap_err().diagnostic();
+        assert_eq!(diag.message, "expected `}`, found end of input");
         assert_eq!(
-            parse("1 +").unwrap_err().to_string(),
-            "Unexpected token at 3..3: expected an expression but got <eof>"
+            diag.label,
+            Some((Span { start: 3, end: 3 }, "expected `}`".into()))
         );
-        assert_eq!(
-            parse("1 $").unwrap_err().to_string(),
-            "Unexpected char at 2..3"
-        );
-        assert_eq!(
-            parse("99999999999999999999").unwrap_err().to_string(),
-            "Integer literal at 0..20 is too large for i64"
-        );
+
+        let src = "99999999999999999999";
+        let diag = parse(src).unwrap_err().diagnostic();
+        assert_eq!(diag.notes, ["the largest integer is 9223372036854775807"]);
     }
 }

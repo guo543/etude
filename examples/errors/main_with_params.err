@@ -1,0 +1,7 @@
+Error: `main` must not take parameters
+   ╭─[ examples/errors/main_with_params.etd:1:10 ]
+   │
+ 1 │ def main(argc, argv) = argc;
+   │          ─────┬────
+   │               ╰────── remove these parameters
+───╯

@@ -1,1 +1,7 @@
-Eval: Unbound identifier at 49..50
+Error: cannot find `b` in this scope
+   ╭─[ examples/errors/block_scope_ends.etd:3:5 ]
+   │
+ 3 │     b
+   │     ┬
+   │     ╰── not found in this scope
+───╯

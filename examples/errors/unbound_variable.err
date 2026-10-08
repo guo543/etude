@@ -1,1 +1,7 @@
-Eval: Unbound identifier at 13..14
+Error: cannot find `x` in this scope
+   ╭─[ examples/errors/unbound_variable.etd:1:14 ]
+   │
+ 1 │ def main() = x;
+   │              ┬
+   │              ╰── not found in this scope
+───╯

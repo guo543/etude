@@ -1,1 +1,7 @@
-Parser: Unexpected token at 16..17: expected an expression but got <;>
+Error: expected an expression, found `;`
+   ╭─[ examples/errors/missing_operand.etd:1:17 ]
+   │
+ 1 │ def main() = 1 +;
+   │                 ┬
+   │                 ╰── expected an expression
+───╯

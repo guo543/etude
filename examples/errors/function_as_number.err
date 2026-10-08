@@ -1,0 +1,7 @@
+Error: mismatched types
+   ╭─[ examples/errors/function_as_number.etd:3:14 ]
+   │
+ 3 │ def main() = f + 1;
+   │              ┬
+   │              ╰── expected `int`, found `fun`
+───╯
