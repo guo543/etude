@@ -1,19 +1,25 @@
 use std::fmt;
 use std::str::CharIndices;
 
+use crate::span::Span;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind {
     Int,
     Ident,
     Let,
+    Def,
     Eq,
     Plus,
     Minus,
     Star,
     Slash,
+    Comma,
     SemiColon,
     LParen,
     RParen,
+    LBrace,
+    RBrace,
     /// A character that cannot start any token. The lexer never fails;
     /// the parser reports these when it reaches them.
     Unknown,
@@ -28,29 +34,21 @@ impl fmt::Display for TokenKind {
             TokenKind::Int => write!(f, "<int>"),
             TokenKind::Ident => write!(f, "<id>"),
             TokenKind::Let => write!(f, "<let>"),
+            TokenKind::Def => write!(f, "<def>"),
             TokenKind::Eq => write!(f, "<=>"),
             TokenKind::Plus => write!(f, "<+>"),
             TokenKind::Minus => write!(f, "<->"),
             TokenKind::Star => write!(f, "<*>"),
             TokenKind::Slash => write!(f, "</>"),
+            TokenKind::Comma => write!(f, "<,>"),
             TokenKind::SemiColon => write!(f, "<;>"),
             TokenKind::LParen => write!(f, "<(>"),
             TokenKind::RParen => write!(f, "<)>"),
+            TokenKind::LBrace => write!(f, "<{{>"),
+            TokenKind::RBrace => write!(f, "<}}>"),
             TokenKind::Unknown => write!(f, "<unknown>"),
             TokenKind::Eof => write!(f, "<eof>"),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl fmt::Display for Span {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
     }
 }
 
@@ -127,18 +125,22 @@ impl<'src> Lexer<'src> {
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
             '=' => TokenKind::Eq,
+            ',' => TokenKind::Comma,
             ';' => TokenKind::SemiColon,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
+            '{' => TokenKind::LBrace,
+            '}' => TokenKind::RBrace,
             c if c.is_ascii_alphabetic() => {
-                self.eat_while(|c| c.is_ascii_alphanumeric());
+                self.eat_while(|c| c.is_ascii_alphanumeric() || c == '_');
                 match &self.src[start..self.pos()] {
                     "let" => TokenKind::Let,
+                    "def" => TokenKind::Def,
                     _ => TokenKind::Ident,
                 }
             }
             c if c.is_ascii_digit() => {
-                self.eat_while(|c| c.is_ascii_digit());
+                self.eat_while(|c| c.is_ascii_alphanumeric());
                 TokenKind::Int
             }
             _ => TokenKind::Unknown,
@@ -192,10 +194,14 @@ mod test {
             ("*", Star),
             ("/", Slash),
             ("=", Eq),
+            (",", Comma),
             (";", SemiColon),
             ("(", LParen),
             (")", RParen),
+            ("{", LBrace),
+            ("}", RBrace),
             ("let", Let),
+            ("def", Def),
             ("42", Int),
             ("x", Ident),
         ];
@@ -263,6 +269,9 @@ mod test {
         assert_eq!(tokens("Let"), vec![(Ident, "Let")]);
         assert_eq!(kinds("let let"), vec![Let, Let]);
         assert_eq!(kinds("let(x)"), vec![Let, LParen, Ident, RParen]);
+        assert_eq!(tokens("define"), vec![(Ident, "define")]);
+        assert_eq!(tokens("def_"), vec![(Ident, "def_")]);
+        assert_eq!(kinds("def f()"), vec![Def, Ident, LParen, RParen]);
     }
 
     #[test]
@@ -280,18 +289,28 @@ mod test {
             tokens("aéb"),
             vec![(Ident, "a"), (Unknown, "é"), (Ident, "b")]
         );
-        // `_` is not accepted (yet).
-        assert_eq!(
-            tokens("a_b"),
-            vec![(Ident, "a"), (Unknown, "_"), (Ident, "b")]
-        );
     }
 
     #[test]
-    fn number_followed_by_letters_splits() {
-        assert_eq!(tokens("123abc"), vec![(Int, "123"), (Ident, "abc")]);
-        assert_eq!(tokens("2let"), vec![(Int, "2"), (Let, "let")]);
-        assert_eq!(tokens("1x2"), vec![(Int, "1"), (Ident, "x2")]);
+    fn underscores_in_identifiers() {
+        assert_eq!(tokens("a_b"), vec![(Ident, "a_b")]);
+        assert_eq!(tokens("x_"), vec![(Ident, "x_")]);
+        assert_eq!(tokens("a__1"), vec![(Ident, "a__1")]);
+        // An identifier cannot start with `_`.
+        assert_eq!(tokens("_a"), vec![(Unknown, "_"), (Ident, "a")]);
+    }
+
+    #[test]
+    fn number_followed_by_letters_is_one_token() {
+        // The parser rejects these as invalid integer literals.
+        assert_eq!(tokens("123abc"), vec![(Int, "123abc")]);
+        assert_eq!(tokens("2let"), vec![(Int, "2let")]);
+        assert_eq!(
+            tokens("1x2 + 3"),
+            vec![(Int, "1x2"), (Plus, "+"), (Int, "3")]
+        );
+        // `_` is not part of a number.
+        assert_eq!(tokens("1_0"), vec![(Int, "1"), (Unknown, "_"), (Int, "0")]);
     }
 
     #[test]
@@ -321,7 +340,7 @@ mod test {
 
     #[test]
     fn unknown_chars() {
-        for c in ['$', '_', '!', '.', ',', '٣', '€', 'é'] {
+        for c in ['$', '_', '!', '.', '٣', '€', 'é'] {
             let src = c.to_string();
             assert_eq!(tokens(&src), vec![(Unknown, src.as_str())], "input: {c:?}");
         }
@@ -376,9 +395,13 @@ mod test {
             (Minus, "<->"),
             (Star, "<*>"),
             (Slash, "</>"),
+            (Comma, "<,>"),
             (SemiColon, "<;>"),
             (LParen, "<(>"),
             (RParen, "<)>"),
+            (LBrace, "<{>"),
+            (RBrace, "<}>"),
+            (Def, "<def>"),
             (Unknown, "<unknown>"),
             (Eof, "<eof>"),
         ];
@@ -391,7 +414,7 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 10] = ['a', 'l', 'e', 't', '1', '+', ';', ' ', 'é', '$'];
+        const ALPHABET: [char; 11] = ['a', 'l', 'e', 't', '_', '1', '+', ';', ' ', 'é', '$'];
 
         let mut inputs = vec![String::new()];
         let mut frontier = vec![String::new()];
@@ -417,13 +440,17 @@ mod test {
                 assert!(!text.trim().is_empty(), "whitespace-only token in {src:?}");
 
                 match tok.kind {
-                    Int => assert!(text.bytes().all(|b| b.is_ascii_digit()), "{text:?}"),
+                    Int => {
+                        assert!(text.starts_with(|c: char| c.is_ascii_digit()));
+                        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric()), "{text:?}");
+                    }
                     Ident => {
                         assert!(text.starts_with(|c: char| c.is_ascii_alphabetic()));
-                        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric()));
-                        assert_ne!(text, "let");
+                        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+                        assert!(text != "let" && text != "def", "{text:?}");
                     }
                     Let => assert_eq!(text, "let"),
+                    Def => assert_eq!(text, "def"),
                     _ => assert_eq!(text.chars().count(), 1, "{text:?}"),
                 }
             }

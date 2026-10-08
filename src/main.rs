@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::{env, fs};
 
-use etude::interpreter;
+// use etude::interpreter;
 use etude::lexer::Lexer;
 use etude::parser::Parser;
 
@@ -10,7 +10,9 @@ fn run(input: &str) -> Result<i64, String> {
     let ast = Parser::new(Lexer::new(input))
         .parse()
         .map_err(|e| format!("Parser: {e}"))?;
-    interpreter::eval(&ast).map_err(|e| format!("Eval: {e}"))
+    println!("{ast}");
+    // interpreter::eval(&ast).map_err(|e| format!("Eval: {e}"))
+    Ok(42)
 }
 
 fn main() -> ExitCode {
