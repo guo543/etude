@@ -1,44 +1,42 @@
 use std::fmt;
-use std::num::IntErrorKind;
 use std::str::CharIndices;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenKind<'a> {
-    Int(i64),
-    Ident(&'a str),
+pub enum TokenKind {
+    Int,
+    Ident,
     Let,
     Eq,
     Plus,
     Minus,
     Star,
     Slash,
+    SemiColon,
     LParen,
     RParen,
     /// A character that cannot start any token. The lexer never fails;
     /// the parser reports these when it reaches them.
-    Unknown(char),
-    /// Digits that do not fit in an `i64`, with the reason from `str::parse`.
-    InvalidInt(IntErrorKind),
+    Unknown,
     /// End of input. `Lexer::next_token` keeps returning it once the input
     /// runs out.
     Eof,
 }
 
-impl fmt::Display for TokenKind<'_> {
+impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TokenKind::Int(n) => write!(f, "<int: {n}>"),
-            TokenKind::Ident(id) => write!(f, "<id: {id}>"),
+            TokenKind::Int => write!(f, "<int>"),
+            TokenKind::Ident => write!(f, "<id>"),
             TokenKind::Let => write!(f, "<let>"),
             TokenKind::Eq => write!(f, "<=>"),
             TokenKind::Plus => write!(f, "<+>"),
             TokenKind::Minus => write!(f, "<->"),
             TokenKind::Star => write!(f, "<*>"),
             TokenKind::Slash => write!(f, "</>"),
+            TokenKind::SemiColon => write!(f, "<;>"),
             TokenKind::LParen => write!(f, "<(>"),
             TokenKind::RParen => write!(f, "<)>"),
-            TokenKind::Unknown(c) => write!(f, "<unknown: {c}>"),
-            TokenKind::InvalidInt(_) => write!(f, "<invalid int>"),
+            TokenKind::Unknown => write!(f, "<unknown>"),
             TokenKind::Eof => write!(f, "<eof>"),
         }
     }
@@ -57,13 +55,13 @@ impl fmt::Display for Span {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
+pub struct Token {
+    pub kind: TokenKind,
     pub span: Span,
 }
 
-impl<'a> Token<'a> {
-    pub fn new(kind: TokenKind<'a>, start: usize, end: usize) -> Self {
+impl Token {
+    pub fn new(kind: TokenKind, start: usize, end: usize) -> Self {
         Token {
             kind,
             span: Span { start, end },
@@ -74,29 +72,35 @@ impl<'a> Token<'a> {
 /// Hands out tokens one at a time. Like rustc's lexer cursor, it holds a plain
 /// `CharIndices` and peeks by cloning it, which is cheap (two pointers) and
 /// keeps `as_str()` and `offset()` available.
-pub struct Lexer<'a> {
-    chars: CharIndices<'a>,
+pub struct Lexer<'src> {
+    src: &'src str,
+    input: CharIndices<'src>,
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(src: &'a str) -> Self {
+impl<'src> Lexer<'src> {
+    pub fn new(src: &'src str) -> Self {
         Lexer {
-            chars: src.char_indices(),
+            src,
+            input: src.char_indices(),
         }
+    }
+
+    pub fn src(&self) -> &'src str {
+        self.src
     }
 
     /// Byte offset of the next character.
     fn pos(&self) -> usize {
-        self.chars.offset()
+        self.input.offset()
     }
 
     /// The next character, without consuming it.
     fn peek(&self) -> Option<char> {
-        self.chars.clone().next().map(|(_, c)| c)
+        self.input.clone().next().map(|(_, c)| c)
     }
 
     fn bump(&mut self) -> Option<char> {
-        self.chars.next().map(|(_, c)| c)
+        self.input.next().map(|(_, c)| c)
     }
 
     fn eat_while(&mut self, pred: impl Fn(char) -> bool) {
@@ -107,12 +111,11 @@ impl<'a> Lexer<'a> {
 
     /// The next token, or `Eof` (with an empty span at the end of the
     /// input) once there are none left. Keeps returning `Eof` after that.
-    /// Never fails: bad input comes back as `Unknown` or `InvalidInt`.
-    pub fn next_token(&mut self) -> Token<'a> {
-        self.eat_while(char::is_whitespace);
+    /// Never fails: a character that cannot start a token comes back as
+    /// `Unknown`. Integers are not range-checked here; the parser does that.
+    pub fn next_token(&mut self) -> Token {
+        self.eat_while(|c| c.is_ascii_whitespace());
 
-        // Everything from here on; the token's text is a prefix of it.
-        let rest = self.chars.as_str();
         let start = self.pos();
         let Some(c) = self.bump() else {
             return Token::new(TokenKind::Eof, start, start);
@@ -124,23 +127,21 @@ impl<'a> Lexer<'a> {
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
             '=' => TokenKind::Eq,
+            ';' => TokenKind::SemiColon,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
-            c if c.is_alphabetic() => {
-                self.eat_while(char::is_alphanumeric);
-                match &rest[..self.pos() - start] {
+            c if c.is_ascii_alphabetic() => {
+                self.eat_while(|c| c.is_ascii_alphanumeric());
+                match &self.src[start..self.pos()] {
                     "let" => TokenKind::Let,
-                    ident => TokenKind::Ident(ident),
+                    _ => TokenKind::Ident,
                 }
             }
             c if c.is_ascii_digit() => {
                 self.eat_while(|c| c.is_ascii_digit());
-                match rest[..self.pos() - start].parse() {
-                    Ok(n) => TokenKind::Int(n),
-                    Err(e) => TokenKind::InvalidInt(*e.kind()),
-                }
+                TokenKind::Int
             }
-            c => TokenKind::Unknown(c),
+            _ => TokenKind::Unknown,
         };
 
         Token::new(kind, start, self.pos())
@@ -153,7 +154,7 @@ mod test {
     use TokenKind::*;
 
     /// Every token up to, but not including, `Eof`.
-    fn lex(src: &str) -> Vec<Token<'_>> {
+    fn lex(src: &str) -> Vec<Token> {
         let mut lexer = Lexer::new(src);
         let mut tokens = Vec::new();
         loop {
@@ -164,8 +165,23 @@ mod test {
         }
     }
 
-    fn kinds(src: &str) -> Vec<TokenKind<'_>> {
+    fn kinds(src: &str) -> Vec<TokenKind> {
         lex(src).into_iter().map(|t| t.kind).collect()
+    }
+
+    /// Each token's kind together with the source text its span covers.
+    fn tokens(src: &str) -> Vec<(TokenKind, &str)> {
+        lex(src)
+            .into_iter()
+            .map(|t| (t.kind, &src[t.span.start..t.span.end]))
+            .collect()
+    }
+
+    fn spans(src: &str) -> Vec<(usize, usize)> {
+        lex(src)
+            .into_iter()
+            .map(|t| (t.span.start, t.span.end))
+            .collect()
     }
 
     #[test]
@@ -176,22 +192,16 @@ mod test {
             ("*", Star),
             ("/", Slash),
             ("=", Eq),
+            (";", SemiColon),
             ("(", LParen),
             (")", RParen),
             ("let", Let),
-            ("42", Int(42)),
-            ("x", Ident("x")),
+            ("42", Int),
+            ("x", Ident),
         ];
         for (src, expected) in cases {
-            assert_eq!(kinds(src), vec![expected], "input: {src:?}");
+            assert_eq!(tokens(src), vec![(expected, src)], "input: {src:?}");
         }
-    }
-
-    fn spans(src: &str) -> Vec<(usize, usize)> {
-        lex(src)
-            .into_iter()
-            .map(|t| (t.span.start, t.span.end))
-            .collect()
     }
 
     #[test]
@@ -203,101 +213,123 @@ mod test {
 
     #[test]
     fn whitespace_between_tokens() {
-        assert_eq!(kinds("1\t+\n2\r\n"), vec![Int(1), Plus, Int(2)]);
-        assert_eq!(kinds("  x  "), vec![Ident("x")]);
+        assert_eq!(
+            tokens("1\t+\n2\r\n"),
+            vec![(Int, "1"), (Plus, "+"), (Int, "2")]
+        );
+        assert_eq!(tokens("  x  "), vec![(Ident, "x")]);
     }
 
     #[test]
     fn adjacent_tokens() {
-        assert_eq!(kinds("1+2"), vec![Int(1), Plus, Int(2)]);
+        assert_eq!(tokens("1+2"), vec![(Int, "1"), (Plus, "+"), (Int, "2")]);
         assert_eq!(
-            kinds("x=(y)"),
-            vec![Ident("x"), Eq, LParen, Ident("y"), RParen]
+            tokens("x=(y);"),
+            vec![
+                (Ident, "x"),
+                (Eq, "="),
+                (LParen, "("),
+                (Ident, "y"),
+                (RParen, ")"),
+                (SemiColon, ";")
+            ]
         );
-        assert_eq!(kinds("((1))"), vec![LParen, LParen, Int(1), RParen, RParen]);
-        assert_eq!(kinds("-5"), vec![Minus, Int(5)]);
-        assert_eq!(
-            kinds("2*-3/x"),
-            vec![Int(2), Star, Minus, Int(3), Slash, Ident("x")]
-        );
+        assert_eq!(kinds("((1))"), vec![LParen, LParen, Int, RParen, RParen]);
+        assert_eq!(tokens("-5"), vec![(Minus, "-"), (Int, "5")]);
+        assert_eq!(kinds("2*-3/x"), vec![Int, Star, Minus, Int, Slash, Ident]);
     }
 
     #[test]
     fn let_statement() {
         assert_eq!(
-            kinds("let x = 1 + 2"),
-            vec![Let, Ident("x"), Eq, Int(1), Plus, Int(2)]
+            tokens("let x = 1 + 2;"),
+            vec![
+                (Let, "let"),
+                (Ident, "x"),
+                (Eq, "="),
+                (Int, "1"),
+                (Plus, "+"),
+                (Int, "2"),
+                (SemiColon, ";")
+            ]
         );
     }
 
     #[test]
     fn keyword_only_matches_whole_word() {
-        assert_eq!(kinds("letter"), vec![Ident("letter")]);
-        assert_eq!(kinds("let1"), vec![Ident("let1")]);
-        assert_eq!(kinds("le"), vec![Ident("le")]);
-        assert_eq!(kinds("Let"), vec![Ident("Let")]);
+        assert_eq!(tokens("letter"), vec![(Ident, "letter")]);
+        assert_eq!(tokens("let1"), vec![(Ident, "let1")]);
+        assert_eq!(tokens("le"), vec![(Ident, "le")]);
+        assert_eq!(tokens("Let"), vec![(Ident, "Let")]);
         assert_eq!(kinds("let let"), vec![Let, Let]);
-        assert_eq!(kinds("let(x)"), vec![Let, LParen, Ident("x"), RParen]);
+        assert_eq!(kinds("let(x)"), vec![Let, LParen, Ident, RParen]);
     }
 
     #[test]
     fn identifiers() {
-        assert_eq!(kinds("x1"), vec![Ident("x1")]);
-        assert_eq!(kinds("abc123def"), vec![Ident("abc123def")]);
-        assert_eq!(kinds("foo bar"), vec![Ident("foo"), Ident("bar")]);
-        assert_eq!(kinds("é"), vec![Ident("é")]);
-        assert_eq!(kinds("日本"), vec![Ident("日本")]);
+        assert_eq!(tokens("x1"), vec![(Ident, "x1")]);
+        assert_eq!(tokens("abc123def"), vec![(Ident, "abc123def")]);
+        assert_eq!(tokens("foo bar"), vec![(Ident, "foo"), (Ident, "bar")]);
+    }
+
+    #[test]
+    fn identifiers_are_ascii_only() {
+        assert_eq!(tokens("é"), vec![(Unknown, "é")]);
+        assert_eq!(tokens("日本"), vec![(Unknown, "日"), (Unknown, "本")]);
+        assert_eq!(
+            tokens("aéb"),
+            vec![(Ident, "a"), (Unknown, "é"), (Ident, "b")]
+        );
+        // `_` is not accepted (yet).
+        assert_eq!(
+            tokens("a_b"),
+            vec![(Ident, "a"), (Unknown, "_"), (Ident, "b")]
+        );
     }
 
     #[test]
     fn number_followed_by_letters_splits() {
-        assert_eq!(kinds("123abc"), vec![Int(123), Ident("abc")]);
-        assert_eq!(kinds("2let"), vec![Int(2), Let]);
-        assert_eq!(kinds("1x2"), vec![Int(1), Ident("x2")]);
+        assert_eq!(tokens("123abc"), vec![(Int, "123"), (Ident, "abc")]);
+        assert_eq!(tokens("2let"), vec![(Int, "2"), (Let, "let")]);
+        assert_eq!(tokens("1x2"), vec![(Int, "1"), (Ident, "x2")]);
     }
 
     #[test]
     fn integers() {
-        assert_eq!(kinds("0"), vec![Int(0)]);
-        assert_eq!(kinds("007"), vec![Int(7)]);
-        assert_eq!(kinds("1 2 3"), vec![Int(1), Int(2), Int(3)]);
-        assert_eq!(kinds(&i64::MAX.to_string()), vec![Int(i64::MAX)]);
+        assert_eq!(tokens("0"), vec![(Int, "0")]);
+        assert_eq!(tokens("007"), vec![(Int, "007")]);
+        assert_eq!(kinds("1 2 3"), vec![Int, Int, Int]);
     }
 
     #[test]
-    fn integer_overflow() {
-        let src = "1 + 9223372036854775808"; // i64::MAX + 1
-        assert_eq!(
-            lex(src)[2],
-            Token::new(InvalidInt(IntErrorKind::PosOverflow), 4, 23)
-        );
+    fn integers_are_not_range_checked() {
+        // Overflow is the parser's job; the lexer only finds the digits.
+        let src = "1 + 99999999999999999999";
+        assert_eq!(lex(src)[2], Token::new(Int, 4, 24));
     }
 
     #[test]
     fn unknown_char() {
-        assert_eq!(lex("1 $ 2")[1], Token::new(Unknown('$'), 2, 3));
+        assert_eq!(lex("1 $ 2")[1], Token::new(Unknown, 2, 3));
     }
 
     #[test]
-    fn lexing_continues_after_bad_input() {
-        assert_eq!(kinds("1 $ 2"), vec![Int(1), Unknown('$'), Int(2)]);
-        assert_eq!(
-            kinds("99999999999999999999 + x"),
-            vec![InvalidInt(IntErrorKind::PosOverflow), Plus, Ident("x")]
-        );
+    fn lexing_continues_after_unknown_char() {
+        assert_eq!(kinds("1 $ 2"), vec![Int, Unknown, Int]);
+        assert_eq!(kinds("$$"), vec![Unknown, Unknown]);
     }
 
     #[test]
     fn unknown_chars() {
-        // `_` and non-ASCII digits are not part of the language (yet).
-        for c in ['$', '_', '!', '.', ',', '٣', '€'] {
-            assert_eq!(kinds(&c.to_string()), vec![Unknown(c)], "input: {c:?}");
+        for c in ['$', '_', '!', '.', ',', '٣', '€', 'é'] {
+            let src = c.to_string();
+            assert_eq!(tokens(&src), vec![(Unknown, src.as_str())], "input: {c:?}");
         }
     }
 
     #[test]
     fn unknown_multibyte_char_span() {
-        assert_eq!(lex("1€")[1], Token::new(Unknown('€'), 1, 4));
+        assert_eq!(lex("1€")[1], Token::new(Unknown, 1, 4));
     }
 
     #[test]
@@ -309,15 +341,24 @@ mod test {
 
     #[test]
     fn spans_are_byte_offsets() {
-        // 'é' is two bytes in UTF-8.
+        // 'é' is two bytes in UTF-8, each CJK character three.
         assert_eq!(spans("é + 1"), vec![(0, 2), (3, 4), (5, 6)]);
-        assert_eq!(spans("日本 = 1"), vec![(0, 6), (7, 8), (9, 10)]);
+        assert_eq!(spans("日本 = 1"), vec![(0, 3), (3, 6), (7, 8), (9, 10)]);
+    }
+
+    #[test]
+    fn non_ascii_whitespace_is_not_skipped() {
+        // U+00A0 NO-BREAK SPACE is two bytes.
+        assert_eq!(
+            tokens("1\u{a0}2"),
+            vec![(Int, "1"), (Unknown, "\u{a0}"), (Int, "2")]
+        );
     }
 
     #[test]
     fn next_token_returns_eof_at_end() {
         let mut lexer = Lexer::new("1  ");
-        assert_eq!(lexer.next_token().kind, Int(1));
+        assert_eq!(lexer.next_token().kind, Int);
         for _ in 0..2 {
             assert_eq!(lexer.next_token(), Token::new(Eof, 3, 3));
         }
@@ -327,18 +368,18 @@ mod test {
     #[test]
     fn token_kind_display() {
         let cases = [
-            (Int(42), "<int: 42>"),
-            (Ident("x"), "<id: x>"),
+            (Int, "<int>"),
+            (Ident, "<id>"),
             (Let, "<let>"),
             (Eq, "<=>"),
             (Plus, "<+>"),
             (Minus, "<->"),
             (Star, "<*>"),
             (Slash, "</>"),
+            (SemiColon, "<;>"),
             (LParen, "<(>"),
             (RParen, "<)>"),
-            (Unknown('$'), "<unknown: $>"),
-            (InvalidInt(IntErrorKind::PosOverflow), "<invalid int>"),
+            (Unknown, "<unknown>"),
             (Eof, "<eof>"),
         ];
         for (kind, expected) in cases {
@@ -350,7 +391,7 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 9] = ['a', 'l', 'e', 't', '1', '+', ' ', 'é', '$'];
+        const ALPHABET: [char; 10] = ['a', 'l', 'e', 't', '1', '+', ';', ' ', 'é', '$'];
 
         let mut inputs = vec![String::new()];
         let mut frontier = vec![String::new()];
@@ -376,12 +417,14 @@ mod test {
                 assert!(!text.trim().is_empty(), "whitespace-only token in {src:?}");
 
                 match tok.kind {
-                    Int(n) => assert_eq!(text.parse::<i64>().unwrap(), n),
-                    InvalidInt(_) => assert!(text.parse::<i64>().is_err()),
-                    Ident(name) => assert_eq!(text, name),
+                    Int => assert!(text.bytes().all(|b| b.is_ascii_digit()), "{text:?}"),
+                    Ident => {
+                        assert!(text.starts_with(|c: char| c.is_ascii_alphabetic()));
+                        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric()));
+                        assert_ne!(text, "let");
+                    }
                     Let => assert_eq!(text, "let"),
-                    Unknown(c) => assert_eq!(text, c.to_string()),
-                    _ => assert_eq!(text.chars().count(), 1),
+                    _ => assert_eq!(text.chars().count(), 1, "{text:?}"),
                 }
             }
         }

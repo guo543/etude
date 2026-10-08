@@ -1,10 +1,11 @@
-use std::io::{self, BufRead, Write};
+use std::process::ExitCode;
+use std::{env, fs};
 
 use etude::interpreter;
 use etude::lexer::Lexer;
 use etude::parser::Parser;
 
-/// Lex, parse and evaluate one line of input.
+/// Lex, parse and evaluate a source file.
 fn run(input: &str) -> Result<i64, String> {
     let ast = Parser::new(Lexer::new(input))
         .parse()
@@ -12,24 +13,29 @@ fn run(input: &str) -> Result<i64, String> {
     interpreter::eval(&ast).map_err(|e| format!("Eval: {e}"))
 }
 
-fn main() {
-    let stdin = io::stdin();
+fn main() -> ExitCode {
+    let mut args = env::args().skip(1);
+    let (Some(path), None) = (args.next(), args.next()) else {
+        eprintln!("usage: etude <file>");
+        return ExitCode::from(2);
+    };
 
-    loop {
-        print!("> ");
-        io::stdout().flush().unwrap();
-
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).unwrap() == 0 {
-            break; // EOF (Ctrl-D)
+    let src = match fs::read_to_string(&path) {
+        Ok(src) => src,
+        Err(e) => {
+            eprintln!("error: cannot read {path}: {e}");
+            return ExitCode::FAILURE;
         }
-        if line.trim().is_empty() {
-            continue;
-        }
+    };
 
-        match run(&line) {
-            Ok(value) => println!("{value}"),
-            Err(msg) => eprintln!("{msg}"),
+    match run(&src) {
+        Ok(value) => {
+            println!("{value}");
+            ExitCode::SUCCESS
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::FAILURE
         }
     }
 }

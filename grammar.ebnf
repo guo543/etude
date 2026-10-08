@@ -1,0 +1,171 @@
+(* Etude grammar
+ *
+ * Notation:
+ *   rule = ... ;      definition
+ *   "x"               literal token
+ *   a b               sequence
+ *   a | b             alternative
+ *   [ a ]             optional
+ *   { a }             zero or more
+ *   ( a )             grouping
+ *   (* ... *)         comment
+ *
+ * Status: describes the planned language. Today the implementation covers
+ * integers, + - * /, and parentheses.
+ *)
+
+
+(* ===================================================================== *)
+(* Program                                                               *)
+(* ===================================================================== *)
+
+(* A program is a list of global definitions. Running it initializes the
+ * globals in order, then calls `main()`.
+ *
+ * `let` and `def` differ in when code runs:
+ *   - `let` evaluates its right-hand side eagerly, once, at that point in
+ *     the program. Use it for values.
+ *   - `def` evaluates nothing when defined; its body runs on every call.
+ *     Use it for functions, including ones with side effects:
+ *     `def f() = ...` delays the effects until `f()` is called.
+ *
+ * Visibility:
+ *   - every `def` can see every other top-level definition, in any order,
+ *     so recursion and mutual recursion need no extra syntax. This is safe
+ *     because a `def` is always a function and needs no evaluation;
+ *   - a global `let` initializer runs in order and may use earlier globals
+ *     and call any function. Reading a global that has not been
+ *     initialized yet is a runtime error.
+ *)
+program     = { item } EOF ;
+
+item        = global_let
+            | def ;
+
+global_let  = "let" IDENT "=" expr ";" ;
+
+(* Always a function, always with a parameter list: there is no
+ * `def x = expr` form. `def f(a, b) = body;` means `f = (a, b) => body`,
+ * with `f` in scope inside its own body. Only allowed at the top level
+ * for now.
+ *
+ * The bare name `f` is the function as a value; `f(...)` calls it.
+ *
+ * Functions take a list of parameters and are not curried:
+ * `def add(a, b)` has type `(int, int) -> int` and must be called as
+ * `add(1, 2)`. Currying is written out: `def add(a) = b => a + b;` has
+ * type `int -> int -> int`, called as `add(1)(2)`. *)
+def         = "def" IDENT "(" [ params ] ")" "=" expr ";" ;
+
+params      = IDENT { "," IDENT } ;
+
+
+(* ===================================================================== *)
+(* Expressions, from lowest to highest precedence                        *)
+(* ===================================================================== *)
+
+expr        = lambda
+            | or_expr ;
+
+(* The body extends as far right as possible, so a lambda has the lowest
+ * precedence: `x => x + 1` is `x => (x + 1)`. It stops at `,` `)` `;` `}`.
+ *
+ * Parsing note: at `(` or IDENT the parser cannot yet tell a lambda from
+ * a parenthesized expression, a unit literal or a variable. It looks
+ * ahead (on a copy of the lexer) for "=>" after the matching ")" or right
+ * after the identifier. *)
+lambda      = lambda_params "=>" expr ;
+
+lambda_params
+            = IDENT
+            | "(" [ params ] ")" ;
+
+or_expr     = and_expr { "||" and_expr } ;
+
+and_expr    = comparison { "&&" comparison } ;
+
+(* Non-associative: `a < b < c` is a syntax error. *)
+comparison  = additive [ compare_op additive ] ;
+
+compare_op  = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+additive    = multiplicative { ( "+" | "-" ) multiplicative } ;
+
+multiplicative
+            = unary { ( "*" | "/" ) unary } ;
+
+unary       = ( "-" | "!" ) unary
+            | postfix ;
+
+(* Calls bind tighter than any operator: `f(x)(y)`, `make_adder(1)(2)`.
+ * The number of arguments must match the number of parameters exactly;
+ * there is no implicit partial application. *)
+postfix     = atom { call_args } ;
+
+call_args   = "(" [ expr { "," expr } ] ")" ;
+
+atom        = INT
+            | "true"
+            | "false"
+            | IDENT
+            | "(" ")"                       (* unit *)
+            | "(" expr ")"
+            | block
+            | if_expr ;
+
+
+(* ===================================================================== *)
+(* Blocks and statements                                                 *)
+(* ===================================================================== *)
+
+(* A block's value is its tail expression, or unit if there is none.
+ * Each `let` is in scope for the rest of the block, so
+ * `{ let x = e1; rest }` means `let x = e1 in { rest }`.
+ *
+ * Parsing note: after an expression, ";" makes it a statement and "}"
+ * makes it the tail. *)
+block       = "{" { stmt } [ expr ] "}" ;
+
+(* Bindings are immutable; a later `let` with the same name shadows the
+ * earlier one. `let` is not recursive: in `let x = x + 1;` the right-hand
+ * `x` is the outer one.
+ * Every statement ends in ";", including ones that end in a block. *)
+stmt        = "let" IDENT "=" expr ";"
+            | expr ";" ;                    (* evaluated for side effects *)
+
+(* Braces are required, so there is no dangling-else ambiguity.
+ * Without `else`, the value is unit. *)
+if_expr     = "if" expr block [ "else" ( block | if_expr ) ] ;
+
+
+(* ===================================================================== *)
+(* Lexical grammar                                                       *)
+(* ===================================================================== *)
+
+(* Whitespace and comments separate tokens and are otherwise ignored. *)
+whitespace  = " " | "\t" | "\n" | "\r" ;
+
+comment     = "//" { ? any character except newline ? } ;
+
+(* A keyword is never an identifier. *)
+IDENT       = ( letter | "_" ) { letter | digit | "_" } ;
+
+keyword     = "let" | "def" | "if" | "else" | "true" | "false" ;
+
+(* Must fit in an i64; a larger literal is an error. Negative numbers are
+ * unary minus applied to a literal. *)
+INT         = digit { digit } ;
+
+letter      = "a" | ... | "z" | "A" | ... | "Z" ;
+
+digit       = "0" | ... | "9" ;
+
+(* Longest match: "==" before "=", "=>" before "=", "<=" before "<", etc. *)
+punctuation = "+" | "-" | "*" | "/" | "!"
+            | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
+            | "&&" | "||" | "=>"
+            | "(" | ")" | "{" | "}" | "," | ";" ;
+
+(* Not a character in the source: the lexer returns it once the input
+ * runs out, and keeps returning it. *)
+EOF         = ? end of input ? ;
