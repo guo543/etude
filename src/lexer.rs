@@ -7,8 +7,11 @@ use crate::span::Span;
 pub enum TokenKind {
     Int,
     Ident,
+    True,
+    False,
     Let,
     Def,
+    Fun,
     Eq,
     Plus,
     Minus,
@@ -16,6 +19,7 @@ pub enum TokenKind {
     Slash,
     Comma,
     SemiColon,
+    Arrow,
     LParen,
     RParen,
     LBrace,
@@ -35,8 +39,11 @@ impl fmt::Display for TokenKind {
         let text = match self {
             TokenKind::Int => "an integer",
             TokenKind::Ident => "an identifier",
+            TokenKind::True => "`true`",
+            TokenKind::False => "`false`",
             TokenKind::Let => "`let`",
             TokenKind::Def => "`def`",
+            TokenKind::Fun => "`fun`",
             TokenKind::Eq => "`=`",
             TokenKind::Plus => "`+`",
             TokenKind::Minus => "`-`",
@@ -44,6 +51,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Slash => "`/`",
             TokenKind::Comma => "`,`",
             TokenKind::SemiColon => "`;`",
+            TokenKind::Arrow => "`=>`",
             TokenKind::LParen => "`(`",
             TokenKind::RParen => "`)`",
             TokenKind::LBrace => "`{`",
@@ -127,6 +135,10 @@ impl<'src> Lexer<'src> {
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
+            '=' if let Some('>') = self.peek() => {
+                self.bump();
+                TokenKind::Arrow
+            }
             '=' => TokenKind::Eq,
             ',' => TokenKind::Comma,
             ';' => TokenKind::SemiColon,
@@ -139,6 +151,9 @@ impl<'src> Lexer<'src> {
                 match &self.src[start..self.pos()] {
                     "let" => TokenKind::Let,
                     "def" => TokenKind::Def,
+                    "true" => TokenKind::True,
+                    "false" => TokenKind::False,
+                    "fun" => TokenKind::Fun,
                     _ => TokenKind::Ident,
                 }
             }
@@ -197,6 +212,7 @@ mod test {
             ("*", Star),
             ("/", Slash),
             ("=", Eq),
+            ("=>", Arrow),
             (",", Comma),
             (";", SemiColon),
             ("(", LParen),
@@ -205,6 +221,9 @@ mod test {
             ("}", RBrace),
             ("let", Let),
             ("def", Def),
+            ("fun", Fun),
+            ("true", True),
+            ("false", False),
             ("42", Int),
             ("x", Ident),
         ];
@@ -275,6 +294,77 @@ mod test {
         assert_eq!(tokens("define"), vec![(Ident, "define")]);
         assert_eq!(tokens("def_"), vec![(Ident, "def_")]);
         assert_eq!(kinds("def f()"), vec![Def, Ident, LParen, RParen]);
+    }
+
+    #[test]
+    fn new_keywords_only_match_whole_words() {
+        for word in [
+            "trueish", "true1", "True", "falsey", "false_", "funny", "fun_", "Fun",
+        ] {
+            assert_eq!(tokens(word), vec![(Ident, word)], "input: {word:?}");
+        }
+        assert_eq!(kinds("true false"), vec![True, False]);
+        assert_eq!(kinds("fun(x)"), vec![Fun, LParen, Ident, RParen]);
+    }
+
+    #[test]
+    fn arrow_is_one_token() {
+        assert_eq!(tokens("=>"), vec![(Arrow, "=>")]);
+        assert_eq!(
+            tokens("x => x"),
+            vec![(Ident, "x"), (Arrow, "=>"), (Ident, "x")]
+        );
+        // No spaces needed around it.
+        assert_eq!(
+            tokens("x=>x+1"),
+            vec![
+                (Ident, "x"),
+                (Arrow, "=>"),
+                (Ident, "x"),
+                (Plus, "+"),
+                (Int, "1")
+            ]
+        );
+    }
+
+    #[test]
+    fn equals_followed_by_other_characters() {
+        // `=` at the very end: peeking finds nothing.
+        assert_eq!(tokens("x ="), vec![(Ident, "x"), (Eq, "=")]);
+        // A space splits `= >`; `>` on its own is not a token (yet).
+        assert_eq!(tokens("= >"), vec![(Eq, "="), (Unknown, ">")]);
+        // There is no `==` yet, so it is two `=`.
+        assert_eq!(tokens("=="), vec![(Eq, "="), (Eq, "=")]);
+        // Longest match from the left.
+        assert_eq!(tokens("=>="), vec![(Arrow, "=>"), (Eq, "=")]);
+        assert_eq!(tokens("==>"), vec![(Eq, "="), (Arrow, "=>")]);
+        assert_eq!(tokens("=>>"), vec![(Arrow, "=>"), (Unknown, ">")]);
+        assert_eq!(
+            tokens("let f = x => x;"),
+            vec![
+                (Let, "let"),
+                (Ident, "f"),
+                (Eq, "="),
+                (Ident, "x"),
+                (Arrow, "=>"),
+                (Ident, "x"),
+                (SemiColon, ";"),
+            ]
+        );
+    }
+
+    #[test]
+    fn lambda_shaped_input() {
+        assert_eq!(
+            kinds("fun(a, b) => { a }"),
+            vec![
+                Fun, LParen, Ident, Comma, Ident, RParen, Arrow, LBrace, Ident, RBrace
+            ]
+        );
+        assert_eq!(
+            spans("fun(a) => a"),
+            vec![(0, 3), (3, 4), (4, 5), (5, 6), (7, 9), (10, 11)]
+        );
     }
 
     #[test]
@@ -394,7 +484,11 @@ mod test {
             (Ident, "an identifier"),
             (Let, "`let`"),
             (Def, "`def`"),
+            (Fun, "`fun`"),
+            (True, "`true`"),
+            (False, "`false`"),
             (Eq, "`=`"),
+            (Arrow, "`=>`"),
             (Plus, "`+`"),
             (Minus, "`-`"),
             (Star, "`*`"),
@@ -417,7 +511,9 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 11] = ['a', 'l', 'e', 't', '_', '1', '+', ';', ' ', 'é', '$'];
+        const ALPHABET: [char; 13] = [
+            'a', 'l', 'e', 't', '_', '1', '+', ';', '=', '>', ' ', 'é', '$',
+        ];
 
         let mut inputs = vec![String::new()];
         let mut frontier = vec![String::new()];
@@ -450,10 +546,12 @@ mod test {
                     Ident => {
                         assert!(text.starts_with(|c: char| c.is_ascii_alphabetic()));
                         assert!(text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
-                        assert!(text != "let" && text != "def", "{text:?}");
+                        let keywords = ["let", "def", "fun", "true", "false"];
+                        assert!(!keywords.contains(&text), "{text:?}");
                     }
                     Let => assert_eq!(text, "let"),
                     Def => assert_eq!(text, "def"),
+                    Arrow => assert_eq!(text, "=>"),
                     _ => assert_eq!(text.chars().count(), 1, "{text:?}"),
                 }
             }

@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Ast, BinOp, Decl, DeclKind, Expr, ExprKind, Ident, Stmt, UnOp},
+    ast::{Ast, BinOp, Decl, DeclKind, Expr, ExprKind, Ident, Stmt, StmtKind, UnOp},
     diagnostic::Diagnostic,
     span::Span,
 };
@@ -209,12 +209,12 @@ impl TreeEval {
 
     fn eval_stmt(&self, stmt: &Stmt, env: Env) -> Result<Env, EvalError> {
         match &stmt.kind {
-            crate::ast::StmtKind::Let { id, init } => {
+            StmtKind::Let { id, init } => {
                 let v = self.eval_expr(init, &env)?;
                 let env = env.insert(id.clone(), v.clone());
                 Ok(env)
             }
-            crate::ast::StmtKind::ExprStmt(expr) => {
+            StmtKind::ExprStmt(expr) => {
                 let _ = self.eval_expr(expr, &env)?;
                 Ok(env)
             }
