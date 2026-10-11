@@ -14,7 +14,7 @@ pub enum Expected {
 
 /// How it is named in error messages, e.g. "expected an expression".
 impl fmt::Display for Expected {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Expected::Token(kind) => write!(f, "{kind}"),
             Expected::Expression => write!(f, "an expression"),
@@ -47,7 +47,7 @@ impl ParserError {
 
 /// The headline of the error; `diagnostic` adds the location and details.
 impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParserError::UnknownChar { ch, .. } => write!(f, "unknown character `{ch}`"),
             ParserError::InvalidInt {

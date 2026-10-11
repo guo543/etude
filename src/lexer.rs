@@ -35,7 +35,7 @@ pub enum TokenKind {
 /// How the token is named in error messages, e.g. "expected `;`, found
 /// end of input". Use `{:?}` for the variant name when debugging.
 impl fmt::Display for TokenKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             TokenKind::Int => "an integer",
             TokenKind::Ident => "an identifier",

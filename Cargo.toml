@@ -6,3 +6,8 @@ edition = "2024"
 [dependencies]
 ariadne = "0.6.0"
 clap = { version = "4.6.7", features = ["derive"] }
+
+[lints.rust]
+# Flag `Value` or `Env` written without its lifetime, e.g. `Option<&Value>`:
+# the hidden lifetime is easy to get wrong.
+elided_lifetimes_in_paths = "warn"

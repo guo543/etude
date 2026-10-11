@@ -60,16 +60,21 @@ impl Error {
     }
 }
 
-/// Lex, parse and evaluate a source file. With `print_ast`, the parsed
-/// program is printed before it runs.
-fn run(input: &str, print_ast: bool) -> Result<eval::Value, Error> {
+/// Lex, parse and evaluate a source file, returning the printed result.
+/// With `print_ast`, the parsed program is printed before it runs.
+///
+/// The result is formatted here because values borrow from the AST, which
+/// only lives inside this function.
+fn run(input: &str, print_ast: bool) -> Result<String, Error> {
     let ast = Parser::new(Lexer::new(input))
         .parse()
         .map_err(Error::Parse)?;
     if print_ast {
         println!("{ast}");
     }
-    eval::eval(&ast).map_err(Error::Eval)
+    eval::eval(&ast)
+        .map(|value| value.to_string())
+        .map_err(Error::Eval)
 }
 
 fn main() -> ExitCode {

@@ -48,7 +48,7 @@ pub enum EvalError {
 
 /// The headline of the error; `diagnostic` adds the location and details.
 impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EvalError::DivisionByZero(_) => write!(f, "division by zero"),
             EvalError::UnboundIdent { name, .. } => {
@@ -98,19 +98,19 @@ impl EvalError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Closure {
-    params: Vec<Ident>,
-    body: Expr,
-    env: Env,
+pub struct Closure<'ast> {
+    params: &'ast Vec<Ident>,
+    body: &'ast Expr,
+    env: Env<'ast>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'ast> {
     Int(i64),
-    Fun(Rc<Closure>),
+    Fun(Rc<Closure<'ast>>),
 }
 
-impl Value {
+impl Value<'_> {
     pub fn ty(&self) -> Type {
         match self {
             Value::Int(_) => Type::Int,
@@ -119,7 +119,7 @@ impl Value {
     }
 }
 
-impl fmt::Display for Value {
+impl fmt::Display for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
@@ -138,20 +138,20 @@ impl fmt::Display for Value {
 }
 
 #[derive(Debug, Clone)]
-struct Binding {
-    id: Ident,
-    value: Value,
+struct Binding<'ast> {
+    id: &'ast Ident,
+    value: Value<'ast>,
 
-    parent: Option<Rc<Binding>>,
+    parent: Option<Rc<Binding<'ast>>>,
 }
 
 #[derive(Debug, Clone)]
-struct Env {
-    head: Option<Rc<Binding>>,
+struct Env<'ast> {
+    head: Option<Rc<Binding<'ast>>>,
 }
 
-impl Env {
-    fn insert(&self, id: Ident, value: Value) -> Self {
+impl<'ast> Env<'ast> {
+    fn insert(&self, id: &'ast Ident, value: Value<'ast>) -> Self {
         Env {
             head: Some(Rc::new(Binding {
                 id,
@@ -161,7 +161,7 @@ impl Env {
         }
     }
 
-    fn search(&self, name: &str) -> Option<&Value> {
+    fn search(&self, name: &str) -> Option<&Value<'ast>> {
         let mut curr = &self.head;
         loop {
             match curr {
@@ -179,39 +179,43 @@ impl Env {
     }
 }
 
-struct TreeEval {
-    globals: HashMap<String, Value>,
+struct TreeEval<'ast> {
+    globals: HashMap<&'ast str, Value<'ast>>,
 }
 
-impl TreeEval {
+impl<'ast> TreeEval<'ast> {
     fn new() -> Self {
         TreeEval {
             globals: HashMap::new(),
         }
     }
 
-    fn search<'env>(&'env self, name: &str, env: &'env Env) -> Option<&'env Value> {
+    fn search<'env>(
+        &'env self,
+        name: &'ast str,
+        env: &'env Env<'ast>,
+    ) -> Option<&'env Value<'ast>> {
         env.search(name).or_else(|| self.globals.get(name))
     }
 
-    fn eval_decl(&mut self, decl: &Decl) {
+    fn eval_decl(&mut self, decl: &'ast Decl) {
         match &decl.kind {
             DeclKind::FunDecl { id, params, body } => {
                 let f = Value::Fun(Rc::new(Closure {
-                    params: params.clone(),
-                    body: body.clone(),
+                    params,
+                    body,
                     env: Env { head: None },
                 }));
-                self.globals.insert(id.name.clone(), f);
+                self.globals.insert(&id.name, f);
             }
         }
     }
 
-    fn eval_stmt(&self, stmt: &Stmt, env: Env) -> Result<Env, EvalError> {
+    fn eval_stmt(&self, stmt: &'ast Stmt, env: Env<'ast>) -> Result<Env<'ast>, EvalError> {
         match &stmt.kind {
             StmtKind::Let { id, init } => {
                 let v = self.eval_expr(init, &env)?;
-                let env = env.insert(id.clone(), v.clone());
+                let env = env.insert(id, v.clone());
                 Ok(env)
             }
             StmtKind::ExprStmt(expr) => {
@@ -221,7 +225,7 @@ impl TreeEval {
         }
     }
 
-    fn eval_expr(&self, expr: &Expr, env: &Env) -> Result<Value, EvalError> {
+    fn eval_expr(&self, expr: &'ast Expr, env: &Env<'ast>) -> Result<Value<'ast>, EvalError> {
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Var(name) => {
@@ -253,10 +257,10 @@ impl TreeEval {
                 let mut closure_env = closure.env.clone();
                 for (param, arg) in closure.params.iter().zip(args.iter()) {
                     let v = self.eval_expr(arg, env)?;
-                    closure_env = closure_env.insert(param.clone(), v);
+                    closure_env = closure_env.insert(param, v);
                 }
 
-                self.eval_expr(&closure.body, &closure_env)
+                self.eval_expr(closure.body, &closure_env)
             }
             ExprKind::Unary(op, operand) => {
                 let e = self.eval_expr(operand, env)?;
@@ -320,7 +324,7 @@ impl TreeEval {
         }
     }
 
-    pub fn eval(&mut self, ast: &Ast) -> Result<Value, EvalError> {
+    pub fn eval(&mut self, ast: &'ast Ast) -> Result<Value<'ast>, EvalError> {
         for decl in &ast.decls {
             self.eval_decl(decl);
         }
@@ -333,7 +337,7 @@ impl TreeEval {
                     end: last.span.end,
                 }));
             }
-            self.eval_expr(&closure.body, &closure.env)
+            self.eval_expr(closure.body, &closure.env)
         } else {
             Err(EvalError::MissingMain)
         }
@@ -341,7 +345,7 @@ impl TreeEval {
 }
 
 /// Run a program: define every top-level function, then call `main`.
-pub fn eval(ast: &Ast) -> Result<Value, EvalError> {
+pub fn eval<'ast>(ast: &'ast Ast) -> Result<Value<'ast>, EvalError> {
     TreeEval::new().eval(ast)
 }
 
@@ -351,12 +355,12 @@ mod test {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    fn run(src: &str) -> Result<Value, EvalError> {
-        eval(&Parser::new(Lexer::new(src)).parse().unwrap())
-    }
+    // Values borrow from the AST, so the helpers keep the AST alive and
+    // return only owned results.
 
     fn error(src: &str) -> EvalError {
-        run(src).unwrap_err()
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        eval(&ast).unwrap_err()
     }
 
     fn text(src: &str, span: Span) -> &str {
@@ -443,7 +447,8 @@ mod test {
     }
 
     fn value(src: &str) -> i64 {
-        match run(src) {
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        match eval(&ast) {
             Ok(Value::Int(n)) => n,
             other => panic!("expected an integer, got {other:?}"),
         }
@@ -493,21 +498,20 @@ mod test {
         let ast = Parser::new(Lexer::new(body_src)).parse().unwrap();
         let DeclKind::FunDecl { body, .. } = &ast.decls[0].kind;
 
-        let captured = Env { head: None }.insert(
-            Ident {
-                name: "x".into(),
-                span: Span { start: 0, end: 0 },
-            },
-            Value::Int(5),
-        );
+        let x = Ident {
+            name: "x".into(),
+            span: Span { start: 0, end: 0 },
+        };
+        let params = vec![];
+        let captured = Env { head: None }.insert(&x, Value::Int(5));
         let closure = Value::Fun(Rc::new(Closure {
-            params: vec![],
-            body: body.clone(),
+            params: &params,
+            body,
             env: captured,
         }));
 
         let mut interp = TreeEval::new();
-        interp.globals.insert("g".into(), closure);
+        interp.globals.insert("g", closure);
         let call = Parser::new(Lexer::new("def main() = g();"))
             .parse()
             .unwrap();
