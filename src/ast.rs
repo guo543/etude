@@ -52,6 +52,7 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
+    Lambda { params: Vec<Ident>, body: Box<Expr> },
     Block { stmts: Vec<Stmt>, tail: Box<Expr> },
 }
 
@@ -122,6 +123,16 @@ impl Expr {
         }
     }
 
+    pub fn lambda(params: Vec<Ident>, body: Expr, start: usize, end: usize) -> Self {
+        Expr {
+            kind: ExprKind::Lambda {
+                params,
+                body: Box::new(body),
+            },
+            span: Span { start, end },
+        }
+    }
+
     pub fn block(stmts: Vec<Stmt>, tail: Expr, start: usize, end: usize) -> Self {
         Expr {
             kind: ExprKind::Block {
@@ -159,6 +170,16 @@ impl fmt::Display for Expr {
             }
             ExprKind::Unary(op, expr) => write!(f, "({op} {expr})"),
             ExprKind::Binary(op, lhs, rhs) => write!(f, "({lhs} {op} {rhs})"),
+            ExprKind::Lambda { params, body } => {
+                write!(f, "FUN (")?;
+                for (i, param) in params.iter().enumerate() {
+                    write!(f, "{}", param.name)?;
+                    if i != params.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ") => {body}")
+            }
             ExprKind::Block { stmts, tail } => {
                 write!(f, "BLOCK: {{ ")?;
                 for stmt in stmts {

@@ -312,6 +312,14 @@ impl<'ast> TreeEval<'ast> {
                 res.ok_or(EvalError::IntegerOverflow(expr.span))
                     .map(Value::Int)
             }
+            ExprKind::Lambda { params, body } => {
+                let f = Value::Fun(Rc::new(Closure {
+                    params,
+                    body,
+                    env: env.clone(),
+                }));
+                Ok(f)
+            }
             ExprKind::Block { stmts, tail } => {
                 let mut new_env = env.clone();
 
@@ -518,5 +526,84 @@ mod test {
         let DeclKind::FunDecl { body: call, .. } = &call.decls[0].kind;
         let result = interp.eval_expr(call, &Env { head: None }).unwrap();
         assert!(matches!(result, Value::Int(6)), "got {result:?}");
+    }
+
+    #[test]
+    fn lambda_captures_its_environment() {
+        let src = "def main() = { let a = 10; let f = fun(x) => x + a; f(1) };";
+        assert_eq!(value(src), 11);
+    }
+
+    #[test]
+    fn captured_parameter_outlives_the_call() {
+        // `z` belongs to `make`'s call, which has returned by the time
+        // `inc` runs.
+        let src = "def make(z) = fun(x, y) => x + y + z;
+                   def main() = { let inc = make(1); inc(10000, 2) };";
+        assert_eq!(value(src), 10003);
+    }
+
+    #[test]
+    fn capture_is_not_affected_by_later_shadowing() {
+        let src = "def main() = { let x = 1; let f = fun() => x; let x = 2; f() };";
+        assert_eq!(value(src), 1);
+    }
+
+    #[test]
+    fn lambda_does_not_see_later_bindings() {
+        let src = "def main() = { let f = fun() => y; let y = 2; f() };";
+        assert!(matches!(error(src), EvalError::UnboundIdent { name, .. } if name == "y"));
+    }
+
+    #[test]
+    fn lambda_sees_where_it_was_written_not_where_it_is_called() {
+        // `apply` has its own `z`, but the lambda captured `main`'s.
+        let src = "def apply(f) = { let z = 100; f() };
+                   def main() = { let z = 1; apply(fun() => z) };";
+        assert_eq!(value(src), 1);
+    }
+
+    #[test]
+    fn currying() {
+        assert_eq!(
+            value("def add(a) = fun(b) => a + b; def main() = add(3)(4);"),
+            7
+        );
+        let src = "def main() = { let a = 1; let f = fun(b) => fun(c) => a + b + c; f(10)(100) };";
+        assert_eq!(value(src), 111);
+    }
+
+    #[test]
+    fn lambdas_as_arguments() {
+        let src = "def twice(f, x) = f(f(x)); def main() = twice(fun(n) => n * 3, 2);";
+        assert_eq!(value(src), 18);
+    }
+
+    #[test]
+    fn calling_a_lambda_directly() {
+        assert_eq!(value("def main() = (fun(x) => x + 1)(41);"), 42);
+        assert_eq!(value("def main() = (fun() => 7)();"), 7);
+    }
+
+    #[test]
+    fn lambda_argument_count_is_checked() {
+        let src = "def main() = (fun(x) => x)(1, 2);";
+        let EvalError::ArgumentCountMismatch {
+            expected: 1,
+            actual: 2,
+            span,
+        } = error(src)
+        else {
+            panic!("expected ArgumentCountMismatch");
+        };
+        assert_eq!(text(src, span), "(fun(x) => x)(1, 2)");
+    }
+
+    #[test]
+    fn a_lambda_is_a_value() {
+        let src = "def main() = fun(x) => x;";
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        let result = eval(&ast).unwrap();
+        assert_eq!(result.ty(), Type::Fun);
     }
 }

@@ -240,6 +240,30 @@ impl<'src> Parser<'src> {
                 let id = self.parse_ident()?;
                 Ok(Expr::var(id.name, id.span.start, id.span.end))
             }
+            TokenKind::Fun => {
+                let start = self.token.span.start;
+                self.bump();
+                self.expect(TokenKind::LParen)?;
+                let mut params = Vec::<Ident>::new();
+                if !self.peek_is(TokenKind::RParen) {
+                    loop {
+                        let param = self.parse_ident()?;
+                        params.push(param);
+                        if self.peek_is(TokenKind::Comma) {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                self.expect(TokenKind::RParen)?;
+                self.expect(TokenKind::Arrow)?;
+
+                let body = self.parse_expr()?;
+                let end = body.span.end;
+                Ok(Expr::lambda(params, body, start, end))
+            }
             TokenKind::LParen => {
                 let start = self.token.span.start;
                 self.bump();
@@ -514,6 +538,131 @@ mod test {
         assert_eq!(
             parse_program(src).unwrap().to_string(),
             "AST:\nDEF add (a, b) = (a + b)\nDEF main () = add(1, add(2, 3))\n"
+        );
+    }
+
+    #[test]
+    fn lambdas() {
+        assert_eq!(ast("fun() => 1"), "FUN () => 1");
+        assert_eq!(ast("fun(x) => x"), "FUN (x) => x");
+        assert_eq!(ast("fun(a, b) => a * b"), "FUN (a, b) => (a * b)");
+        assert_eq!(ast("fun (x) => x"), "FUN (x) => x");
+        assert_eq!(
+            ast("fun(x) => { let y = x; y }"),
+            "FUN (x) => BLOCK: { LET: y = x ; y }"
+        );
+    }
+
+    #[test]
+    fn lambda_body_extends_as_far_right_as_possible() {
+        assert_eq!(ast("fun(x) => x + 1 * 2"), "FUN (x) => (x + (1 * 2))");
+        // A lambda returning a lambda (currying).
+        assert_eq!(
+            ast("fun(a) => fun(b) => a + b"),
+            "FUN (a) => FUN (b) => (a + b)"
+        );
+        // A call after the body belongs to the body, not to the lambda.
+        let expr = parse("fun(f) => f(1)").unwrap();
+        let ExprKind::Lambda { body, .. } = &expr.kind else {
+            panic!("expected a lambda, got {expr}");
+        };
+        assert!(matches!(body.kind, ExprKind::Call { .. }), "got {body}");
+    }
+
+    #[test]
+    fn lambda_body_ends_at_comma_and_closing_paren() {
+        assert_eq!(ast("g(fun(x) => x * 2, 3)"), "g(FUN (x) => (x * 2), 3)");
+        // Parenthesized, a lambda can be called right away.
+        let expr = parse("(fun(x) => x + 1)(41)").unwrap();
+        let ExprKind::Call { callee, args } = &expr.kind else {
+            panic!("expected a call, got {expr}");
+        };
+        assert!(
+            matches!(callee.kind, ExprKind::Lambda { .. }),
+            "got {callee}"
+        );
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn lambda_spans() {
+        let src = "g(fun(x, yy) => x * yy, 3)";
+        let expr = parse(src).unwrap();
+        let ExprKind::Call { args, .. } = &expr.kind else {
+            panic!("expected a call, got {expr}");
+        };
+        assert_eq!(text(src, args[0].span), "fun(x, yy) => x * yy");
+        let ExprKind::Lambda { params, body } = &args[0].kind else {
+            panic!("expected a lambda, got {}", args[0]);
+        };
+        let names: Vec<_> = params.iter().map(|p| text(src, p.span)).collect();
+        assert_eq!(names, ["x", "yy"]);
+        assert_eq!(text(src, body.span), "x * yy");
+
+        // Including the parentheses around it.
+        let src = "(fun() => 1)";
+        assert_eq!(text(src, parse(src).unwrap().span), "(fun() => 1)");
+    }
+
+    #[test]
+    fn lambda_errors() {
+        for (src, expected, actual) in [
+            (
+                "fun x = 1",
+                Expected::Token(TokenKind::LParen),
+                TokenKind::Ident,
+            ),
+            (
+                "fun(x) x",
+                Expected::Token(TokenKind::Arrow),
+                TokenKind::Ident,
+            ),
+            // `=` is for `def`; a lambda's body follows `=>`.
+            (
+                "fun(x) = x",
+                Expected::Token(TokenKind::Arrow),
+                TokenKind::Eq,
+            ),
+            (
+                "fun x => 1",
+                Expected::Token(TokenKind::LParen),
+                TokenKind::Ident,
+            ),
+            (
+                "fun(x,) => x",
+                Expected::Token(TokenKind::Ident),
+                TokenKind::RParen,
+            ),
+            (
+                "fun(1) => x",
+                Expected::Token(TokenKind::Ident),
+                TokenKind::Int,
+            ),
+            ("fun(x) =>", Expected::Expression, TokenKind::Eof),
+            (
+                "fun(x = x",
+                Expected::Token(TokenKind::RParen),
+                TokenKind::Eq,
+            ),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ParserError::UnexpectedToken { expected: e, actual: a, .. }
+                        if e == expected && a == actual
+                ),
+                "input: {src:?}, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lambdas_in_programs() {
+        let src = "def add(a) = fun(b) => a + b; def main() = add(1)(2);";
+        assert_eq!(
+            parse_program(src).unwrap().to_string(),
+            "AST:\nDEF add (a) = FUN (b) => (a + b)\nDEF main () = add(1)(2)\n"
         );
     }
 

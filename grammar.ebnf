@@ -45,7 +45,7 @@ item        = global_let
 global_let  = "let" IDENT "=" expr ";" ;
 
 (* Always a function, always with a parameter list: there is no
- * `def x = expr` form. `def f(a, b) = body;` means `f = (a, b) => body`,
+ * `def x = expr` form. `def f(a, b) = body;` means `f = fun(a, b) => body`,
  * with `f` in scope inside its own body. Only allowed at the top level
  * for now.
  *
@@ -53,7 +53,7 @@ global_let  = "let" IDENT "=" expr ";" ;
  *
  * Functions take a list of parameters and are not curried:
  * `def add(a, b)` has type `(int, int) -> int` and must be called as
- * `add(1, 2)`. Currying is written out: `def add(a) = b => a + b;` has
+ * `add(1, 2)`. Currying is written out: `def add(a) = fun(b) => a + b;` has
  * type `int -> int -> int`, called as `add(1)(2)`. *)
 def         = "def" IDENT "(" [ params ] ")" "=" expr ";" ;
 
@@ -64,21 +64,7 @@ params      = IDENT { "," IDENT } ;
 (* Expressions, from lowest to highest precedence                        *)
 (* ===================================================================== *)
 
-expr        = lambda
-            | or_expr ;
-
-(* The body extends as far right as possible, so a lambda has the lowest
- * precedence: `x => x + 1` is `x => (x + 1)`. It stops at `,` `)` `;` `}`.
- *
- * Parsing note: at `(` or IDENT the parser cannot yet tell a lambda from
- * a parenthesized expression, a unit literal or a variable. It looks
- * ahead (on a copy of the lexer) for "=>" after the matching ")" or right
- * after the identifier. *)
-lambda      = lambda_params "=>" expr ;
-
-lambda_params
-            = IDENT
-            | "(" [ params ] ")" ;
+expr        = or_expr ;
 
 or_expr     = and_expr { "||" and_expr } ;
 
@@ -111,7 +97,19 @@ atom        = INT
             | "(" ")"                       (* unit *)
             | "(" expr ")"
             | block
-            | if_expr ;
+            | if_expr
+            | lambda ;
+
+(* An anonymous function. It closes over the variables in scope where it
+ * is written. `=>` (not `=` as in `def`) separates parameters from body,
+ * which keeps `let f = fun(x) => x == 0;` readable.
+ *
+ * The body extends as far right as possible: `fun(x) => x + 1` is
+ * `fun(x) => (x + 1)`, and `fun(f) => f(1)` calls `f` inside the body. It
+ * stops at `,` `)` `;` `}`, so `g(fun(x) => x, 2)` passes two arguments.
+ * To call a lambda right away, put it in parentheses:
+ * `(fun(x) => x + 1)(41)`. *)
+lambda      = "fun" "(" [ params ] ")" "=>" expr ;
 
 
 (* ===================================================================== *)
@@ -150,7 +148,7 @@ comment     = "//" { ? any character except newline ? } ;
 (* A keyword is never an identifier. *)
 IDENT       = ( letter | "_" ) { letter | digit | "_" } ;
 
-keyword     = "let" | "def" | "if" | "else" | "true" | "false" ;
+keyword     = "let" | "def" | "fun" | "if" | "else" | "true" | "false" ;
 
 (* Must fit in an i64; a larger literal is an error. Negative numbers are
  * unary minus applied to a literal. *)

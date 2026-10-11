@@ -1,0 +1,7 @@
+Error: wrong number of arguments
+   ╭─[ examples/errors/lambda_argument_count.etd:3:5 ]
+   │
+ 3 │     f(1, 2)
+   │     ───┬───
+   │        ╰───── expected 1 argument, found 2
+───╯

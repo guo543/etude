@@ -1,0 +1,7 @@
+Error: expected `=>`, found `=`
+   ╭─[ examples/errors/lambda_missing_arrow.etd:2:20 ]
+   │
+ 2 │     let f = fun(x) = x;
+   │                    ┬
+   │                    ╰── expected `=>`
+───╯

@@ -1,0 +1,12 @@
+def make_adder(n) = fun(x) => x + n;
+
+def compose(f, g) = fun(x) => f(g(x));
+
+def twice(f) = compose(f, f);
+
+def main() = {
+    let add10 = make_adder(10);
+    let double = fun(x) => x * 2;
+    let add10_then_double = compose(double, add10);
+    twice(add10_then_double)(1)
+};
