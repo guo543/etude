@@ -18,7 +18,8 @@ runs and is tested.
   values; integers with overflow and division checks.
 - **Errors:** reported with ariadne (`src/diagnostic.rs`): headline, file,
   underlined source.
-- **CLI:** `etude [--ast] <file>`; `--ast` prints the parsed program first.
+- **CLI:** `etude [--ast] [--color auto|always|never] <file>` (clap);
+  `--ast` prints the parsed program first.
 
 ---
 

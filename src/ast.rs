@@ -171,6 +171,7 @@ impl fmt::Display for Expr {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum DeclKind {
     // VarDecl {
     //     id: String,
@@ -183,6 +184,7 @@ pub enum DeclKind {
     },
 }
 
+#[derive(Debug, Clone)]
 pub struct Decl {
     pub kind: DeclKind,
     pub span: Span,
@@ -214,6 +216,7 @@ impl fmt::Display for Decl {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Ast {
     pub decls: Vec<Decl>,
 }

@@ -3,7 +3,7 @@ use crate::{
     diagnostic::Diagnostic,
     span::Span,
 };
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
@@ -98,9 +98,16 @@ impl EvalError {
 }
 
 #[derive(Debug, Clone)]
+pub struct Closure {
+    params: Vec<Ident>,
+    body: Expr,
+    env: Env,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
-    Fun { params: Vec<Ident>, body: Expr },
+    Fun(Rc<Closure>),
 }
 
 impl Value {
@@ -116,174 +123,226 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Fun { params, body } => {
-                let param_list = params
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                write!(f, "fun ({param_list}) = {body}")
+            Value::Fun(closure) => {
+                write!(f, "FUN (")?;
+                for (i, param) in closure.params.iter().enumerate() {
+                    write!(f, "{}", param.name)?;
+                    if i != closure.params.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ") => {}", closure.body)
             }
         }
     }
 }
 
-fn search(id: &str, env: &[HashMap<String, Value>]) -> Option<Value> {
-    for map in env.iter().rev() {
-        if let Some(v) = map.get(id).cloned() {
-            return Some(v);
-        }
-    }
-    None
+#[derive(Debug, Clone)]
+struct Binding {
+    id: Ident,
+    value: Value,
+
+    parent: Option<Rc<Binding>>,
 }
 
-fn eval_stmt(stmt: &Stmt, env: &mut Vec<HashMap<String, Value>>) -> Result<(), EvalError> {
-    match &stmt.kind {
-        crate::ast::StmtKind::Let { id, init } => {
-            let v = eval_expr(init, env)?;
-            let last = env.last_mut().unwrap();
-            last.insert(id.name.clone(), v.clone());
-            Ok(())
-        }
-        crate::ast::StmtKind::ExprStmt(expr) => {
-            let _ = eval_expr(expr, env)?;
-            Ok(())
-        }
-    }
+#[derive(Debug, Clone)]
+struct Env {
+    head: Option<Rc<Binding>>,
 }
 
-fn eval_expr(expr: &Expr, env: &mut Vec<HashMap<String, Value>>) -> Result<Value, EvalError> {
-    match &expr.kind {
-        ExprKind::Int(n) => Ok(Value::Int(*n)),
-        ExprKind::Var(name) => search(name, env).ok_or_else(|| EvalError::UnboundIdent {
-            name: name.clone(),
-            span: expr.span,
-        }),
-        ExprKind::Call { callee, args } => {
-            let f = eval_expr(callee, env)?;
-            let Value::Fun { params, body } = f else {
-                return Err(EvalError::TypeMismatch {
-                    expected: Type::Fun,
-                    actual: f.ty(),
-                    span: callee.span,
-                });
-            };
-            let mut clone = vec![env.first().cloned().unwrap()];
-            let mut new_env = HashMap::<String, Value>::new();
-            if params.len() != args.len() {
-                return Err(EvalError::ArgumentCountMismatch {
-                    expected: params.len(),
-                    actual: args.len(),
-                    span: expr.span,
-                });
-            }
-            for (param, arg) in params.iter().zip(args.iter()) {
-                let v = eval_expr(arg, env)?;
-                new_env.insert(param.name.clone(), v);
-            }
-            clone.push(new_env);
-
-            eval_expr(&body, &mut clone)
+impl Env {
+    fn insert(&self, id: Ident, value: Value) -> Self {
+        Env {
+            head: Some(Rc::new(Binding {
+                id,
+                value,
+                parent: self.head.clone(),
+            })),
         }
-        ExprKind::Unary(op, operand) => {
-            let e = eval_expr(operand, env)?;
-            match op {
-                UnOp::Neg => {
-                    let Value::Int(n) = e else {
-                        return Err(EvalError::TypeMismatch {
-                            expected: Type::Int,
-                            actual: e.ty(),
-                            span: operand.span,
-                        });
-                    };
-                    let Some(res) = n.checked_neg() else {
-                        return Err(EvalError::IntegerOverflow(expr.span));
-                    };
-                    Ok(Value::Int(res))
+    }
+
+    fn search(&self, name: &str) -> Option<&Value> {
+        let mut curr = &self.head;
+        loop {
+            match curr {
+                Some(binding) if name == binding.id.name => {
+                    break Some(&binding.value);
+                }
+                Some(binding) => {
+                    curr = &binding.parent;
+                }
+                None => {
+                    break None;
                 }
             }
         }
-        ExprKind::Binary(op, lhs, rhs) => {
-            let lv = eval_expr(lhs, env)?;
-            let rv = eval_expr(rhs, env)?;
+    }
+}
 
-            let Value::Int(l) = lv else {
-                return Err(EvalError::TypeMismatch {
-                    expected: Type::Int,
-                    actual: lv.ty(),
-                    span: lhs.span,
-                });
-            };
+struct TreeEval {
+    globals: HashMap<String, Value>,
+}
 
-            let Value::Int(r) = rv else {
-                return Err(EvalError::TypeMismatch {
-                    expected: Type::Int,
-                    actual: rv.ty(),
-                    span: rhs.span,
-                });
-            };
-
-            let res = match op {
-                BinOp::Add => l.checked_add(r),
-                BinOp::Sub => l.checked_sub(r),
-                BinOp::Mul => l.checked_mul(r),
-                BinOp::Div if r == 0 => {
-                    return Err(EvalError::DivisionByZero(rhs.span));
-                }
-                BinOp::Div => l.checked_div(r),
-            };
-            res.ok_or(EvalError::IntegerOverflow(expr.span))
-                .map(Value::Int)
+impl TreeEval {
+    fn new() -> Self {
+        TreeEval {
+            globals: HashMap::new(),
         }
-        ExprKind::Block { stmts, tail } => {
-            env.push(HashMap::new());
-            for stmt in stmts {
-                eval_stmt(stmt, env)?;
+    }
+
+    fn search<'env>(&'env self, name: &str, env: &'env Env) -> Option<&'env Value> {
+        env.search(name).or_else(|| self.globals.get(name))
+    }
+
+    fn eval_decl(&mut self, decl: &Decl) {
+        match &decl.kind {
+            DeclKind::FunDecl { id, params, body } => {
+                let f = Value::Fun(Rc::new(Closure {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: Env { head: None },
+                }));
+                self.globals.insert(id.name.clone(), f);
             }
-            let res = eval_expr(tail, env)?;
-            env.pop();
-            Ok(res)
+        }
+    }
+
+    fn eval_stmt(&self, stmt: &Stmt, env: Env) -> Result<Env, EvalError> {
+        match &stmt.kind {
+            crate::ast::StmtKind::Let { id, init } => {
+                let v = self.eval_expr(init, &env)?;
+                let env = env.insert(id.clone(), v.clone());
+                Ok(env)
+            }
+            crate::ast::StmtKind::ExprStmt(expr) => {
+                let _ = self.eval_expr(expr, &env)?;
+                Ok(env)
+            }
+        }
+    }
+
+    fn eval_expr(&self, expr: &Expr, env: &Env) -> Result<Value, EvalError> {
+        match &expr.kind {
+            ExprKind::Int(n) => Ok(Value::Int(*n)),
+            ExprKind::Var(name) => {
+                self.search(name, env)
+                    .cloned()
+                    .ok_or_else(|| EvalError::UnboundIdent {
+                        name: name.clone(),
+                        span: expr.span,
+                    })
+            }
+            ExprKind::Call { callee, args } => {
+                let f = self.eval_expr(callee, env)?;
+                let Value::Fun(closure) = f else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: Type::Fun,
+                        actual: f.ty(),
+                        span: callee.span,
+                    });
+                };
+                if closure.params.len() != args.len() {
+                    return Err(EvalError::ArgumentCountMismatch {
+                        expected: closure.params.len(),
+                        actual: args.len(),
+                        span: expr.span,
+                    });
+                }
+                // Start from what the closure captured, not the caller's
+                // environment: that is what makes scoping lexical.
+                let mut closure_env = closure.env.clone();
+                for (param, arg) in closure.params.iter().zip(args.iter()) {
+                    let v = self.eval_expr(arg, env)?;
+                    closure_env = closure_env.insert(param.clone(), v);
+                }
+
+                self.eval_expr(&closure.body, &closure_env)
+            }
+            ExprKind::Unary(op, operand) => {
+                let e = self.eval_expr(operand, env)?;
+                match op {
+                    UnOp::Neg => {
+                        let Value::Int(n) = e else {
+                            return Err(EvalError::TypeMismatch {
+                                expected: Type::Int,
+                                actual: e.ty(),
+                                span: operand.span,
+                            });
+                        };
+                        let Some(res) = n.checked_neg() else {
+                            return Err(EvalError::IntegerOverflow(expr.span));
+                        };
+                        Ok(Value::Int(res))
+                    }
+                }
+            }
+            ExprKind::Binary(op, lhs, rhs) => {
+                let lv = self.eval_expr(lhs, env)?;
+                let rv = self.eval_expr(rhs, env)?;
+
+                let Value::Int(l) = lv else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: Type::Int,
+                        actual: lv.ty(),
+                        span: lhs.span,
+                    });
+                };
+
+                let Value::Int(r) = rv else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: Type::Int,
+                        actual: rv.ty(),
+                        span: rhs.span,
+                    });
+                };
+
+                let res = match op {
+                    BinOp::Add => l.checked_add(r),
+                    BinOp::Sub => l.checked_sub(r),
+                    BinOp::Mul => l.checked_mul(r),
+                    BinOp::Div if r == 0 => {
+                        return Err(EvalError::DivisionByZero(rhs.span));
+                    }
+                    BinOp::Div => l.checked_div(r),
+                };
+                res.ok_or(EvalError::IntegerOverflow(expr.span))
+                    .map(Value::Int)
+            }
+            ExprKind::Block { stmts, tail } => {
+                let mut new_env = env.clone();
+
+                for stmt in stmts {
+                    new_env = self.eval_stmt(stmt, new_env)?;
+                }
+                let res = self.eval_expr(tail, &new_env)?;
+                Ok(res)
+            }
+        }
+    }
+
+    pub fn eval(&mut self, ast: &Ast) -> Result<Value, EvalError> {
+        for decl in &ast.decls {
+            self.eval_decl(decl);
+        }
+        let main = self.globals.get("main").ok_or(EvalError::MissingMain)?;
+
+        if let Value::Fun(closure) = main {
+            if let (Some(first), Some(last)) = (closure.params.first(), closure.params.last()) {
+                return Err(EvalError::MainHasParams(Span {
+                    start: first.span.start,
+                    end: last.span.end,
+                }));
+            }
+            self.eval_expr(&closure.body, &closure.env)
+        } else {
+            Err(EvalError::MissingMain)
         }
     }
 }
 
-fn eval_decl(decl: &Decl, root: &mut HashMap<String, Value>) {
-    match &decl.kind {
-        DeclKind::FunDecl { id, params, body } => {
-            let f = Value::Fun {
-                params: params.clone(),
-                body: body.clone(),
-            };
-            root.insert(id.name.clone(), f);
-        }
-    }
-}
-
+/// Run a program: define every top-level function, then call `main`.
 pub fn eval(ast: &Ast) -> Result<Value, EvalError> {
-    let main_params = ast
-        .decls
-        .iter()
-        .find_map(|decl| match &decl.kind {
-            DeclKind::FunDecl { id, params, .. } if id.name == "main" => Some(params),
-            _ => None,
-        })
-        .ok_or(EvalError::MissingMain)?;
-    if let (Some(first), Some(last)) = (main_params.first(), main_params.last()) {
-        return Err(EvalError::MainHasParams(Span {
-            start: first.span.start,
-            end: last.span.end,
-        }));
-    }
-
-    let mut root = HashMap::<String, Value>::new();
-
-    ast.decls.iter().for_each(|d| eval_decl(d, &mut root));
-
-    let mut env: Vec<HashMap<String, Value>> = vec![root];
-
-    let main = Expr::var("main".to_string(), 0, 0);
-    let call = Expr::call(main, vec![], 0, 0);
-    eval_expr(&call, &mut env)
+    TreeEval::new().eval(ast)
 }
 
 #[cfg(test)]
@@ -381,5 +440,79 @@ mod test {
         let diag = EvalError::MissingMain.diagnostic();
         assert_eq!(diag.label, None);
         assert_eq!(diag.notes.len(), 1);
+    }
+
+    fn value(src: &str) -> i64 {
+        match run(src) {
+            Ok(Value::Int(n)) => n,
+            other => panic!("expected an integer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn let_shadows_in_the_same_block() {
+        assert_eq!(value("def main() = { let x = 1; let x = x + 10; x };"), 11);
+    }
+
+    #[test]
+    fn inner_block_bindings_end_with_the_block() {
+        let src = "def main() = { let x = 1; let y = { let x = 100; x }; x + y };";
+        assert_eq!(value(src), 101);
+    }
+
+    #[test]
+    fn locals_shadow_globals() {
+        assert_eq!(value("def x() = 1; def main() = { let x = 5; x };"), 5);
+        // Parameters too.
+        assert_eq!(value("def x() = 1; def f(x) = x; def main() = f(7);"), 7);
+    }
+
+    #[test]
+    fn functions_do_not_see_the_callers_locals() {
+        let src = "def f() = y; def main() = { let y = 1; f() };";
+        assert!(matches!(error(src), EvalError::UnboundIdent { name, .. } if name == "y"));
+    }
+
+    #[test]
+    fn arguments_are_evaluated_in_the_callers_scope() {
+        let src = "def f(a) = a * 2; def main() = { let a = 21; f(a) };";
+        assert_eq!(value(src), 42);
+    }
+
+    #[test]
+    fn functions_are_values() {
+        let src = "def inc(x) = x + 1; def twice(f, x) = f(f(x)); def main() = twice(inc, 5);";
+        assert_eq!(value(src), 7);
+    }
+
+    /// There are no lambdas yet, so build a closure that captured `x = 5`
+    /// by hand and check that calling it sees `x`.
+    #[test]
+    fn calls_start_from_the_captured_environment() {
+        let body_src = "def main() = x + 1;";
+        let ast = Parser::new(Lexer::new(body_src)).parse().unwrap();
+        let DeclKind::FunDecl { body, .. } = &ast.decls[0].kind;
+
+        let captured = Env { head: None }.insert(
+            Ident {
+                name: "x".into(),
+                span: Span { start: 0, end: 0 },
+            },
+            Value::Int(5),
+        );
+        let closure = Value::Fun(Rc::new(Closure {
+            params: vec![],
+            body: body.clone(),
+            env: captured,
+        }));
+
+        let mut interp = TreeEval::new();
+        interp.globals.insert("g".into(), closure);
+        let call = Parser::new(Lexer::new("def main() = g();"))
+            .parse()
+            .unwrap();
+        let DeclKind::FunDecl { body: call, .. } = &call.decls[0].kind;
+        let result = interp.eval_expr(call, &Env { head: None }).unwrap();
+        assert!(matches!(result, Value::Int(6)), "got {result:?}");
     }
 }

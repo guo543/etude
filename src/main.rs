@@ -1,13 +1,50 @@
+use std::fs;
 use std::io::{self, IsTerminal};
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::{env, fs};
+
+use clap::{Parser as _, ValueEnum};
 
 use etude::diagnostic::Diagnostic;
 use etude::eval::{self, EvalError};
 use etude::lexer::Lexer;
 use etude::parser::{Parser, ParserError};
 
-const USAGE: &str = "usage: etude [--ast] <file>";
+/// Run an etude program: define its functions, then call `main`.
+#[derive(clap::Parser)]
+#[command(version, about)]
+struct Cli {
+    /// The program to run.
+    file: PathBuf,
+
+    /// Print the parsed program before running it.
+    #[arg(long)]
+    ast: bool,
+
+    /// When to color error messages.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = Color::Auto)]
+    color: Color,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Color {
+    /// Only when writing to a terminal.
+    Auto,
+    /// Even when writing to a file or pipe, e.g. into `less -R`.
+    Always,
+    /// Plain text.
+    Never,
+}
+
+impl Color {
+    fn enabled(self) -> bool {
+        match self {
+            Color::Auto => io::stderr().is_terminal(),
+            Color::Always => true,
+            Color::Never => false,
+        }
+    }
+}
 
 enum Error {
     Parse(ParserError),
@@ -36,24 +73,11 @@ fn run(input: &str, print_ast: bool) -> Result<eval::Value, Error> {
 }
 
 fn main() -> ExitCode {
-    let mut print_ast = false;
-    let mut path = None;
-    for arg in env::args().skip(1) {
-        match arg.as_str() {
-            "--ast" => print_ast = true,
-            _ if arg.starts_with('-') || path.is_some() => {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
-            }
-            _ => path = Some(arg),
-        }
-    }
-    let Some(path) = path else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
+    // On bad arguments clap prints the error and usage and exits with code 2.
+    let cli = Cli::parse();
+    let path = cli.file.display().to_string();
 
-    let src = match fs::read_to_string(&path) {
+    let src = match fs::read_to_string(&cli.file) {
         Ok(src) => src,
         Err(e) => {
             eprintln!("error: cannot read {path}: {e}");
@@ -61,15 +85,13 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&src, print_ast) {
+    match run(&src, cli.ast) {
         Ok(value) => {
             println!("Result: {value}");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            // Colors only on a terminal, not when stderr goes to a file or pipe.
-            let color = io::stderr().is_terminal();
-            e.diagnostic().eprint(&path, &src, color);
+            e.diagnostic().eprint(&path, &src, cli.color.enabled());
             ExitCode::FAILURE
         }
     }
