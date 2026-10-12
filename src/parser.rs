@@ -195,7 +195,7 @@ impl<'src> Parser<'src> {
         self.expect(TokenKind::Eq)?;
 
         let init = self.parse_expr()?;
-        let end = self.expect(TokenKind::SemiColon)?.end;
+        let end = self.expect(TokenKind::Semicolon)?.end;
         Ok(Stmt::let_decl(id, init, start, end))
     }
 
@@ -208,7 +208,7 @@ impl<'src> Parser<'src> {
                 stmts.push(self.parse_let()?);
             } else {
                 let expr = self.parse_expr()?;
-                if self.peek_is(TokenKind::SemiColon) {
+                if self.peek_is(TokenKind::Semicolon) {
                     let start = expr.span.start;
                     let end = self.token.span.end;
                     self.bump();
@@ -268,7 +268,7 @@ impl<'src> Parser<'src> {
                 }
 
                 self.expect(TokenKind::RParen)?;
-                self.expect(TokenKind::Arrow)?;
+                self.expect(TokenKind::FatArrow)?;
 
                 let body = self.parse_expr()?;
                 let end = body.span.end;
@@ -367,7 +367,7 @@ impl<'src> Parser<'src> {
         self.expect(TokenKind::Eq)?;
 
         let body = self.parse_expr()?;
-        let end = self.expect(TokenKind::SemiColon)?.end;
+        let end = self.expect(TokenKind::Semicolon)?.end;
         Ok(Decl::function(id, params, body, start, end))
     }
 
@@ -682,13 +682,13 @@ mod test {
             ),
             (
                 "fun(x) x",
-                Expected::Token(TokenKind::Arrow),
+                Expected::Token(TokenKind::FatArrow),
                 TokenKind::Ident,
             ),
             // `=` is for `def`; a lambda's body follows `=>`.
             (
                 "fun(x) = x",
-                Expected::Token(TokenKind::Arrow),
+                Expected::Token(TokenKind::FatArrow),
                 TokenKind::Eq,
             ),
             (
@@ -944,7 +944,7 @@ mod test {
         assert!(matches!(
             parse("{ let a = 1 a }"),
             Err(ParserError::UnexpectedToken {
-                expected: Expected::Token(TokenKind::SemiColon),
+                expected: Expected::Token(TokenKind::Semicolon),
                 ..
             })
         ));
@@ -1058,7 +1058,7 @@ mod test {
                 matches!(
                     parse_program(src),
                     Err(ParserError::UnexpectedToken {
-                        expected: Expected::Token(TokenKind::SemiColon),
+                        expected: Expected::Token(TokenKind::Semicolon),
                         actual: a,
                         ..
                     }) if a == actual

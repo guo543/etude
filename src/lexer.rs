@@ -5,25 +5,51 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind {
+    // Literals and names
     Int,
     Ident,
-    True,
-    False,
+
+    // Keywords
     Let,
     Def,
     Fun,
-    Eq,
+    If,
+    Else,
+    True,
+    False,
+
+    // Arithmetic operators
     Plus,
     Minus,
     Star,
     Slash,
+
+    // Comparison operators
+    EqEq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Logical operators
+    Bang,
+    AndAnd,
+    OrOr,
+
+    // Punctuation
+    Eq,
+    FatArrow,
     Comma,
-    SemiColon,
-    Arrow,
+    Semicolon,
+
+    // Brackets
     LParen,
     RParen,
     LBrace,
     RBrace,
+
+    // Special
     /// A character that cannot start any token. The lexer never fails;
     /// the parser reports these when it reaches them.
     Unknown,
@@ -37,25 +63,44 @@ pub enum TokenKind {
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
+            // Literals and names
             TokenKind::Int => "an integer",
             TokenKind::Ident => "an identifier",
-            TokenKind::True => "`true`",
-            TokenKind::False => "`false`",
+            // Keywords
             TokenKind::Let => "`let`",
             TokenKind::Def => "`def`",
             TokenKind::Fun => "`fun`",
-            TokenKind::Eq => "`=`",
+            TokenKind::If => "`if`",
+            TokenKind::Else => "`else`",
+            TokenKind::True => "`true`",
+            TokenKind::False => "`false`",
+            // Arithmetic operators
             TokenKind::Plus => "`+`",
             TokenKind::Minus => "`-`",
             TokenKind::Star => "`*`",
             TokenKind::Slash => "`/`",
+            // Comparison operators
+            TokenKind::EqEq => "`==`",
+            TokenKind::Ne => "`!=`",
+            TokenKind::Lt => "`<`",
+            TokenKind::Le => "`<=`",
+            TokenKind::Gt => "`>`",
+            TokenKind::Ge => "`>=`",
+            // Logical operators
+            TokenKind::Bang => "`!`",
+            TokenKind::AndAnd => "`&&`",
+            TokenKind::OrOr => "`||`",
+            // Punctuation
+            TokenKind::Eq => "`=`",
+            TokenKind::FatArrow => "`=>`",
             TokenKind::Comma => "`,`",
-            TokenKind::SemiColon => "`;`",
-            TokenKind::Arrow => "`=>`",
+            TokenKind::Semicolon => "`;`",
+            // Brackets
             TokenKind::LParen => "`(`",
             TokenKind::RParen => "`)`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
+            // Special
             TokenKind::Unknown => "an unknown character",
             TokenKind::Eof => "end of input",
         };
@@ -135,13 +180,40 @@ impl<'src> Lexer<'src> {
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
+            '=' if let Some('=') = self.peek() => {
+                self.bump();
+                TokenKind::EqEq
+            }
             '=' if let Some('>') = self.peek() => {
                 self.bump();
-                TokenKind::Arrow
+                TokenKind::FatArrow
             }
             '=' => TokenKind::Eq,
+            '!' if let Some('=') = self.peek() => {
+                self.bump();
+                TokenKind::Ne
+            }
+            '!' => TokenKind::Bang,
+            '<' if let Some('=') = self.peek() => {
+                self.bump();
+                TokenKind::Le
+            }
+            '<' => TokenKind::Lt,
+            '>' if let Some('=') = self.peek() => {
+                self.bump();
+                TokenKind::Ge
+            }
+            '>' => TokenKind::Gt,
+            '|' if let Some('|') = self.peek() => {
+                self.bump();
+                TokenKind::OrOr
+            }
+            '&' if let Some('&') = self.peek() => {
+                self.bump();
+                TokenKind::AndAnd
+            }
             ',' => TokenKind::Comma,
-            ';' => TokenKind::SemiColon,
+            ';' => TokenKind::Semicolon,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
@@ -154,6 +226,8 @@ impl<'src> Lexer<'src> {
                     "true" => TokenKind::True,
                     "false" => TokenKind::False,
                     "fun" => TokenKind::Fun,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
                     _ => TokenKind::Ident,
                 }
             }
@@ -212,9 +286,18 @@ mod test {
             ("*", Star),
             ("/", Slash),
             ("=", Eq),
-            ("=>", Arrow),
+            ("=>", FatArrow),
+            ("==", EqEq),
+            ("!=", Ne),
+            ("<", Lt),
+            ("<=", Le),
+            (">", Gt),
+            (">=", Ge),
+            ("!", Bang),
+            ("&&", AndAnd),
+            ("||", OrOr),
             (",", Comma),
-            (";", SemiColon),
+            (";", Semicolon),
             ("(", LParen),
             (")", RParen),
             ("{", LBrace),
@@ -222,6 +305,8 @@ mod test {
             ("let", Let),
             ("def", Def),
             ("fun", Fun),
+            ("if", If),
+            ("else", Else),
             ("true", True),
             ("false", False),
             ("42", Int),
@@ -259,7 +344,7 @@ mod test {
                 (LParen, "("),
                 (Ident, "y"),
                 (RParen, ")"),
-                (SemiColon, ";")
+                (Semicolon, ";")
             ]
         );
         assert_eq!(kinds("((1))"), vec![LParen, LParen, Int, RParen, RParen]);
@@ -278,7 +363,7 @@ mod test {
                 (Int, "1"),
                 (Plus, "+"),
                 (Int, "2"),
-                (SemiColon, ";")
+                (Semicolon, ";")
             ]
         );
     }
@@ -309,17 +394,17 @@ mod test {
 
     #[test]
     fn arrow_is_one_token() {
-        assert_eq!(tokens("=>"), vec![(Arrow, "=>")]);
+        assert_eq!(tokens("=>"), vec![(FatArrow, "=>")]);
         assert_eq!(
             tokens("x => x"),
-            vec![(Ident, "x"), (Arrow, "=>"), (Ident, "x")]
+            vec![(Ident, "x"), (FatArrow, "=>"), (Ident, "x")]
         );
         // No spaces needed around it.
         assert_eq!(
             tokens("x=>x+1"),
             vec![
                 (Ident, "x"),
-                (Arrow, "=>"),
+                (FatArrow, "=>"),
                 (Ident, "x"),
                 (Plus, "+"),
                 (Int, "1")
@@ -331,14 +416,14 @@ mod test {
     fn equals_followed_by_other_characters() {
         // `=` at the very end: peeking finds nothing.
         assert_eq!(tokens("x ="), vec![(Ident, "x"), (Eq, "=")]);
-        // A space splits `= >`; `>` on its own is not a token (yet).
-        assert_eq!(tokens("= >"), vec![(Eq, "="), (Unknown, ">")]);
-        // There is no `==` yet, so it is two `=`.
-        assert_eq!(tokens("=="), vec![(Eq, "="), (Eq, "=")]);
+        // A space splits two-character tokens.
+        assert_eq!(tokens("= >"), vec![(Eq, "="), (Gt, ">")]);
+        assert_eq!(tokens("= ="), vec![(Eq, "="), (Eq, "=")]);
         // Longest match from the left.
-        assert_eq!(tokens("=>="), vec![(Arrow, "=>"), (Eq, "=")]);
-        assert_eq!(tokens("==>"), vec![(Eq, "="), (Arrow, "=>")]);
-        assert_eq!(tokens("=>>"), vec![(Arrow, "=>"), (Unknown, ">")]);
+        assert_eq!(tokens("=>="), vec![(FatArrow, "=>"), (Eq, "=")]);
+        assert_eq!(tokens("==>"), vec![(EqEq, "=="), (Gt, ">")]);
+        assert_eq!(tokens("=>>"), vec![(FatArrow, "=>"), (Gt, ">")]);
+        assert_eq!(tokens("==="), vec![(EqEq, "=="), (Eq, "=")]);
         assert_eq!(
             tokens("let f = x => x;"),
             vec![
@@ -346,9 +431,91 @@ mod test {
                 (Ident, "f"),
                 (Eq, "="),
                 (Ident, "x"),
-                (Arrow, "=>"),
+                (FatArrow, "=>"),
                 (Ident, "x"),
-                (SemiColon, ";"),
+                (Semicolon, ";"),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_character_operators_take_both_characters() {
+        for (src, kind) in [
+            ("a==b", EqEq),
+            ("a!=b", Ne),
+            ("a<=b", Le),
+            ("a>=b", Ge),
+            ("a&&b", AndAnd),
+            ("a||b", OrOr),
+        ] {
+            let op = &src[1..3];
+            assert_eq!(
+                tokens(src),
+                vec![(Ident, "a"), (kind, op), (Ident, "b")],
+                "input: {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_character_operators() {
+        assert_eq!(tokens("a<b"), vec![(Ident, "a"), (Lt, "<"), (Ident, "b")]);
+        assert_eq!(tokens("a>b"), vec![(Ident, "a"), (Gt, ">"), (Ident, "b")]);
+        assert_eq!(tokens("!a"), vec![(Bang, "!"), (Ident, "a")]);
+        assert_eq!(tokens("!!a"), vec![(Bang, "!"), (Bang, "!"), (Ident, "a")]);
+        // `<` followed by something other than `=`.
+        assert_eq!(tokens("<-1"), vec![(Lt, "<"), (Minus, "-"), (Int, "1")]);
+    }
+
+    #[test]
+    fn comparison_operators_longest_match() {
+        assert_eq!(tokens("<=="), vec![(Le, "<="), (Eq, "=")]);
+        assert_eq!(tokens("!=="), vec![(Ne, "!="), (Eq, "=")]);
+        assert_eq!(tokens("<=>"), vec![(Le, "<="), (Gt, ">")]);
+        assert_eq!(tokens(">=="), vec![(Ge, ">="), (Eq, "=")]);
+        assert_eq!(tokens("! ="), vec![(Bang, "!"), (Eq, "=")]);
+        assert_eq!(tokens("< ="), vec![(Lt, "<"), (Eq, "=")]);
+    }
+
+    #[test]
+    fn single_bar_and_ampersand_are_unknown() {
+        assert_eq!(tokens("|"), vec![(Unknown, "|")]);
+        assert_eq!(tokens("&"), vec![(Unknown, "&")]);
+        assert_eq!(tokens("| |"), vec![(Unknown, "|"), (Unknown, "|")]);
+        assert_eq!(tokens("|||"), vec![(OrOr, "||"), (Unknown, "|")]);
+        assert_eq!(tokens("&&&"), vec![(AndAnd, "&&"), (Unknown, "&")]);
+        assert_eq!(tokens("&|"), vec![(Unknown, "&"), (Unknown, "|")]);
+    }
+
+    #[test]
+    fn if_and_else_are_keywords() {
+        assert_eq!(
+            kinds("if a { 1 } else { 2 }"),
+            vec![If, Ident, LBrace, Int, RBrace, Else, LBrace, Int, RBrace]
+        );
+        assert_eq!(kinds("else if"), vec![Else, If]);
+        for word in ["iff", "if_", "If", "elsewhere", "else1", "Else"] {
+            assert_eq!(tokens(word), vec![(Ident, word)], "input: {word:?}");
+        }
+    }
+
+    #[test]
+    fn condition_shaped_input() {
+        assert_eq!(
+            tokens("!(a<=1)||b!=c&&d"),
+            vec![
+                (Bang, "!"),
+                (LParen, "("),
+                (Ident, "a"),
+                (Le, "<="),
+                (Int, "1"),
+                (RParen, ")"),
+                (OrOr, "||"),
+                (Ident, "b"),
+                (Ne, "!="),
+                (Ident, "c"),
+                (AndAnd, "&&"),
+                (Ident, "d"),
             ]
         );
     }
@@ -358,7 +525,7 @@ mod test {
         assert_eq!(
             kinds("fun(a, b) => { a }"),
             vec![
-                Fun, LParen, Ident, Comma, Ident, RParen, Arrow, LBrace, Ident, RBrace
+                Fun, LParen, Ident, Comma, Ident, RParen, FatArrow, LBrace, Ident, RBrace
             ]
         );
         assert_eq!(
@@ -433,7 +600,7 @@ mod test {
 
     #[test]
     fn unknown_chars() {
-        for c in ['$', '_', '!', '.', '٣', '€', 'é'] {
+        for c in ['$', '_', '.', '|', '&', '٣', '€', 'é'] {
             let src = c.to_string();
             assert_eq!(tokens(&src), vec![(Unknown, src.as_str())], "input: {c:?}");
         }
@@ -488,13 +655,24 @@ mod test {
             (True, "`true`"),
             (False, "`false`"),
             (Eq, "`=`"),
-            (Arrow, "`=>`"),
+            (FatArrow, "`=>`"),
+            (If, "`if`"),
+            (Else, "`else`"),
+            (Bang, "`!`"),
+            (EqEq, "`==`"),
+            (Ne, "`!=`"),
+            (Lt, "`<`"),
+            (Le, "`<=`"),
+            (Gt, "`>`"),
+            (Ge, "`>=`"),
+            (OrOr, "`||`"),
+            (AndAnd, "`&&`"),
             (Plus, "`+`"),
             (Minus, "`-`"),
             (Star, "`*`"),
             (Slash, "`/`"),
             (Comma, "`,`"),
-            (SemiColon, "`;`"),
+            (Semicolon, "`;`"),
             (LParen, "`(`"),
             (RParen, "`)`"),
             (LBrace, "`{`"),
@@ -511,8 +689,8 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 13] = [
-            'a', 'l', 'e', 't', '_', '1', '+', ';', '=', '>', ' ', 'é', '$',
+        const ALPHABET: [char; 17] = [
+            'a', 'l', 'e', 't', '_', '1', '+', ';', '=', '>', '<', '!', '|', '&', ' ', 'é', '$',
         ];
 
         let mut inputs = vec![String::new()];
@@ -546,12 +724,18 @@ mod test {
                     Ident => {
                         assert!(text.starts_with(|c: char| c.is_ascii_alphabetic()));
                         assert!(text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
-                        let keywords = ["let", "def", "fun", "true", "false"];
+                        let keywords = ["let", "def", "fun", "true", "false", "if", "else"];
                         assert!(!keywords.contains(&text), "{text:?}");
                     }
                     Let => assert_eq!(text, "let"),
                     Def => assert_eq!(text, "def"),
-                    Arrow => assert_eq!(text, "=>"),
+                    FatArrow => assert_eq!(text, "=>"),
+                    EqEq => assert_eq!(text, "=="),
+                    Ne => assert_eq!(text, "!="),
+                    Le => assert_eq!(text, "<="),
+                    Ge => assert_eq!(text, ">="),
+                    OrOr => assert_eq!(text, "||"),
+                    AndAnd => assert_eq!(text, "&&"),
                     _ => assert_eq!(text.chars().count(), 1, "{text:?}"),
                 }
             }
