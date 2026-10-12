@@ -236,6 +236,16 @@ impl<'src> Parser<'src> {
                 self.bump();
                 Ok(n)
             }
+            TokenKind::True => {
+                let span = self.token.span;
+                self.bump();
+                Ok(Expr::bool(true, span.start, span.end))
+            }
+            TokenKind::False => {
+                let span = self.token.span;
+                self.bump();
+                Ok(Expr::bool(false, span.start, span.end))
+            }
             TokenKind::Ident => {
                 let id = self.parse_ident()?;
                 Ok(Expr::var(id.name, id.span.start, id.span.end))
@@ -539,6 +549,64 @@ mod test {
             parse_program(src).unwrap().to_string(),
             "AST:\nDEF add (a, b) = (a + b)\nDEF main () = add(1, add(2, 3))\n"
         );
+    }
+
+    #[test]
+    fn booleans() {
+        assert_eq!(ast("true"), "true");
+        assert_eq!(ast("false"), "false");
+        assert!(matches!(parse("true").unwrap().kind, ExprKind::Bool(true)));
+        assert!(matches!(
+            parse("false").unwrap().kind,
+            ExprKind::Bool(false)
+        ));
+    }
+
+    #[test]
+    fn booleans_in_expressions() {
+        assert_eq!(ast("f(true, false)"), "f(true, false)");
+        assert_eq!(ast("{ let b = true; b }"), "BLOCK: { LET: b = true ; b }");
+        assert_eq!(ast("fun() => false"), "FUN () => false");
+        // Type errors are the evaluator's job; these parse.
+        assert_eq!(ast("true + 1"), "(true + 1)");
+        assert_eq!(ast("-false"), "(- false)");
+    }
+
+    #[test]
+    fn boolean_spans() {
+        let src = "f(1, true)";
+        let ExprKind::Call { args, .. } = &parse(src).unwrap().kind else {
+            panic!("expected a call");
+        };
+        assert_eq!(text(src, args[1].span), "true");
+    }
+
+    #[test]
+    fn booleans_are_not_names() {
+        for (src, actual) in [
+            ("{ let true = 1; 1 }", TokenKind::True),
+            ("fun(false) => 1", TokenKind::False),
+        ] {
+            assert!(
+                matches!(
+                    parse(src),
+                    Err(ParserError::UnexpectedToken {
+                        expected: Expected::Token(TokenKind::Ident),
+                        actual: a,
+                        ..
+                    }) if a == actual
+                ),
+                "input: {src:?}"
+            );
+        }
+        assert!(matches!(
+            parse_program("def true() = 1;"),
+            Err(ParserError::UnexpectedToken {
+                expected: Expected::Token(TokenKind::Ident),
+                actual: TokenKind::True,
+                ..
+            })
+        ));
     }
 
     #[test]

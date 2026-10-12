@@ -48,6 +48,7 @@ pub enum StmtKind {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
+    Bool(bool),
     Var(String),
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Unary(UnOp, Box<Expr>),
@@ -88,6 +89,13 @@ impl Expr {
     pub fn int(n: i64, start: usize, end: usize) -> Self {
         Expr {
             kind: ExprKind::Int(n),
+            span: Span { start, end },
+        }
+    }
+
+    pub fn bool(b: bool, start: usize, end: usize) -> Self {
+        Expr {
+            kind: ExprKind::Bool(b),
             span: Span { start, end },
         }
     }
@@ -157,6 +165,7 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ExprKind::Int(n) => write!(f, "{n}"),
+            ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Var(s) => write!(f, "{s}"),
             ExprKind::Call { callee, args } => {
                 write!(f, "{}(", callee)?;

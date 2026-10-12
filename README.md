@@ -45,14 +45,14 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   `_`), integers.
 - **Parser** (`src/parser.rs`): rustc-style recursive descent that always
   holds the current token. A program is a list of `def name(params) = expr;`.
-  Expressions: integers, variables, unary `-`, binary `+ - * /` (precedence
+  Expressions: integers, `true`/`false`, variables, unary `-`, binary `+ - * /` (precedence
   table in the parser), calls `f(a)(b)` on any expression, lambdas
   `fun(params) => body`, and blocks `{ let x = e; e; tail }`. Every node has
   a span; errors at end of input point right after the last token.
 - **Evaluator** (`src/eval.rs`): a tree walker that borrows from the AST.
   Top-level `def`s live in a global table and are closures with an empty
   captured environment; locals live in an immutable linked environment, so
-  closures capture by sharing it. Values: integers and functions. Integer
+  closures capture by sharing it. Values: integers, booleans and functions. Integer
   overflow, division by zero, wrong argument counts and type mismatches are
   runtime errors.
 - **Errors** (`src/diagnostic.rs`): reported with ariadne. Each error's
@@ -60,7 +60,7 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   label and notes.
 - **CLI** (`src/main.rs`, clap): `etude [--ast] [--color auto|always|never]
   <file>`.
-- **Tests:** 90 unit tests; 27 example programs (9 that run, 18 that must
+- **Tests:** 99 unit tests; 29 example programs (10 that run, 19 that must
   fail with a specific report).
 
 ## Design decisions so far
@@ -117,11 +117,13 @@ Each step ends with something that runs and is tested.
 - [ ] Lexer: `!`, `<`, `>`, and `==`, `!=`, `<=`, `>=`, `&&`, `||` (longest
       match, like `=>`). Keywords `if`, `else` (`true`, `false` are already
       lexed).
+- [x] `true`/`false` atoms in the parser; `Value::Bool` and `Type::Bool` in
+      the evaluator.
 - [ ] Parser: the comparison level (non-associative: `a < b < c` is an
-      error), `&&` and `||`, `!` in `unary_op`, `true`/`false` atoms, and
-      `if c { .. } else { .. }` as an expression, including `else if`.
-- [ ] Evaluator: `Value::Bool`; `&&` and `||` skip the right side when the
-      left side decides the result.
+      error), `&&` and `||`, `!` in `unary_op`, and `if c { .. } else { .. }`
+      as an expression, including `else if`.
+- [ ] Evaluator: comparisons produce booleans; `&&` and `||` skip the right
+      side when the left side decides the result.
 - [ ] Examples: factorial and fibonacci (recursion can now terminate).
 
 ## 3. Unit and `print`

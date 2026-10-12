@@ -1,0 +1,6 @@
+def make(z) = fun(x, y) => x + y + z;
+
+def main() = {
+    let add = make(1);
+    add(10000, true)
+};

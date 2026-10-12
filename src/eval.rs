@@ -8,6 +8,7 @@ use std::{collections::HashMap, fmt, rc::Rc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Int,
+    Bool,
     Fun,
 }
 
@@ -17,6 +18,7 @@ impl fmt::Display for Type {
         match self {
             Type::Int => write!(f, "int"),
             Type::Fun => write!(f, "fun"),
+            Type::Bool => write!(f, "bool"),
         }
     }
 }
@@ -99,7 +101,7 @@ impl EvalError {
 
 #[derive(Debug, Clone)]
 pub struct Closure<'ast> {
-    params: &'ast Vec<Ident>,
+    params: &'ast [Ident],
     body: &'ast Expr,
     env: Env<'ast>,
 }
@@ -107,6 +109,7 @@ pub struct Closure<'ast> {
 #[derive(Debug, Clone)]
 pub enum Value<'ast> {
     Int(i64),
+    Bool(bool),
     Fun(Rc<Closure<'ast>>),
 }
 
@@ -115,6 +118,7 @@ impl Value<'_> {
         match self {
             Value::Int(_) => Type::Int,
             Value::Fun { .. } => Type::Fun,
+            Value::Bool(_) => Type::Bool,
         }
     }
 }
@@ -123,6 +127,7 @@ impl fmt::Display for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
+            Value::Bool(b) => write!(f, "{b}"),
             Value::Fun(closure) => {
                 write!(f, "FUN (")?;
                 for (i, param) in closure.params.iter().enumerate() {
@@ -228,6 +233,7 @@ impl<'ast> TreeEval<'ast> {
     fn eval_expr(&self, expr: &'ast Expr, env: &Env<'ast>) -> Result<Value<'ast>, EvalError> {
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
+            ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::Var(name) => {
                 self.search(name, env)
                     .cloned()
@@ -605,5 +611,70 @@ mod test {
         let ast = Parser::new(Lexer::new(src)).parse().unwrap();
         let result = eval(&ast).unwrap();
         assert_eq!(result.ty(), Type::Fun);
+    }
+
+    /// Run `src` and return its result as printed by `Display`.
+    fn printed(src: &str) -> String {
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        eval(&ast).unwrap().to_string()
+    }
+
+    #[test]
+    fn booleans_are_values() {
+        assert_eq!(printed("def main() = true;"), "true");
+        assert_eq!(printed("def main() = false;"), "false");
+        let ast = Parser::new(Lexer::new("def main() = true;"))
+            .parse()
+            .unwrap();
+        assert_eq!(eval(&ast).unwrap().ty(), Type::Bool);
+    }
+
+    #[test]
+    fn booleans_flow_through_bindings_calls_and_closures() {
+        assert_eq!(printed("def main() = { let b = false; b };"), "false");
+        assert_eq!(printed("def id(x) = x; def main() = id(true);"), "true");
+        let src = "def always(b) = fun() => b; def main() = always(false)();";
+        assert_eq!(printed(src), "false");
+    }
+
+    #[test]
+    fn booleans_are_not_numbers() {
+        // As the left or right operand of arithmetic.
+        let src = "def main() = true + 1;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Bool, span }
+                if text(src, span) == "true"
+        ));
+        let src = "def main() = 2 * false;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Bool, span }
+                if text(src, span) == "false"
+        ));
+        // Negation.
+        let src = "def main() = -true;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Bool, span }
+                if text(src, span) == "true"
+        ));
+    }
+
+    #[test]
+    fn booleans_cannot_be_called() {
+        let src = "def main() = true(1);";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Fun, actual: Type::Bool, span }
+                if text(src, span) == "true"
+        ));
+    }
+
+    #[test]
+    fn bool_type_in_diagnostics() {
+        let src = "def main() = true + 1;";
+        let (_, label) = error(src).diagnostic().label.unwrap();
+        assert_eq!(label, "expected `int`, found `bool`");
     }
 }

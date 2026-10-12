@@ -1,0 +1,9 @@
+def constant(b) = fun() => b;
+
+def pick(first, second) = first;
+
+def main() = {
+    let yes = constant(true);
+    let no = constant(false);
+    pick(no(), yes())
+};

@@ -1,0 +1,7 @@
+Error: mismatched types
+   ╭─[ examples/errors/bool_in_arithmetic.etd:1:32 ]
+   │
+ 1 │ def make(z) = fun(x, y) => x + y + z;
+   │                                ┬
+   │                                ╰── expected `int`, found `bool`
+───╯
