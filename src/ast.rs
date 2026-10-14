@@ -3,33 +3,64 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
+    /// `-x`: integer negation.
     Neg,
+    /// `!x`: boolean negation.
+    Not,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
+    // Arithmetic: integers to an integer.
     Add,
     Sub,
     Mul,
     Div,
+
+    // Comparison: two operands to a boolean.
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Logical: booleans to a boolean. The right operand is only evaluated
+    // when the left one does not already decide the result.
+    And,
+    Or,
 }
 
 impl fmt::Display for UnOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UnOp::Neg => write!(f, "-"),
-        }
+        let text = match self {
+            UnOp::Neg => "-",
+            UnOp::Not => "!",
+        };
+        f.write_str(text)
     }
 }
 
 impl fmt::Display for BinOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BinOp::Add => write!(f, "+"),
-            BinOp::Sub => write!(f, "-"),
-            BinOp::Mul => write!(f, "*"),
-            BinOp::Div => write!(f, "/"),
-        }
+        let text = match self {
+            // Arithmetic
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            // Comparison
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+            // Logical
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        };
+        f.write_str(text)
     }
 }
 
@@ -50,11 +81,26 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Var(String),
-    Call { callee: Box<Expr>, args: Vec<Expr> },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
-    Lambda { params: Vec<Ident>, body: Box<Expr> },
-    Block { stmts: Vec<Stmt>, tail: Box<Expr> },
+    /// `if cond { … } else { … }`; `else if` is an `If` as the else branch.
+    If {
+        cond: Box<Expr>,
+        t_branch: Box<Expr>,
+        f_branch: Option<Box<Expr>>,
+    },
+    Lambda {
+        params: Vec<Ident>,
+        body: Box<Expr>,
+    },
+    Block {
+        stmts: Vec<Stmt>,
+        tail: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +177,23 @@ impl Expr {
         }
     }
 
+    pub fn if_expr(
+        cond: Expr,
+        t_branch: Expr,
+        f_branch: Option<Expr>,
+        start: usize,
+        end: usize,
+    ) -> Self {
+        Expr {
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                t_branch: Box::new(t_branch),
+                f_branch: f_branch.map(Box::new),
+            },
+            span: Span { start, end },
+        }
+    }
+
     pub fn lambda(params: Vec<Ident>, body: Expr, start: usize, end: usize) -> Self {
         Expr {
             kind: ExprKind::Lambda {
@@ -179,6 +242,17 @@ impl fmt::Display for Expr {
             }
             ExprKind::Unary(op, expr) => write!(f, "({op} {expr})"),
             ExprKind::Binary(op, lhs, rhs) => write!(f, "({lhs} {op} {rhs})"),
+            ExprKind::If {
+                cond,
+                t_branch: then_branch,
+                f_branch: else_branch,
+            } => {
+                write!(f, "(IF {cond} {then_branch}")?;
+                if let Some(else_branch) = else_branch {
+                    write!(f, " {else_branch}")?;
+                }
+                write!(f, ")")
+            }
             ExprKind::Lambda { params, body } => {
                 write!(f, "FUN (")?;
                 for (i, param) in params.iter().enumerate() {

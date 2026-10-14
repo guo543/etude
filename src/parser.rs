@@ -25,12 +25,21 @@ impl fmt::Display for Expected {
 #[derive(Debug)]
 pub enum ParserError {
     /// The lexer found a character that cannot start a token.
-    UnknownChar { ch: char, span: Span },
+    UnknownChar {
+        ch: char,
+        span: Span,
+    },
     /// An integer literal that does not fit in an `i64`.
-    InvalidInt { kind: IntErrorKind, span: Span },
+    InvalidInt {
+        kind: IntErrorKind,
+        span: Span,
+    },
     UnexpectedToken {
         expected: Expected,
         actual: TokenKind,
+        span: Span,
+    },
+    ChainedComparison {
         span: Span,
     },
 }
@@ -41,6 +50,7 @@ impl ParserError {
             ParserError::UnknownChar { span, .. }
             | ParserError::InvalidInt { span, .. }
             | ParserError::UnexpectedToken { span, .. } => *span,
+            ParserError::ChainedComparison { span } => *span,
         }
     }
 }
@@ -58,6 +68,9 @@ impl fmt::Display for ParserError {
             ParserError::UnexpectedToken {
                 expected, actual, ..
             } => write!(f, "expected {expected}, found {actual}"),
+            ParserError::ChainedComparison { .. } => {
+                write!(f, "comparison operators cannot be chained")
+            }
         }
     }
 }
@@ -76,6 +89,7 @@ impl ParserError {
             ParserError::UnexpectedToken { expected, .. } => {
                 format!("expected {expected}")
             }
+            ParserError::ChainedComparison { .. } => "cannot follow another comparison".to_owned(),
         };
         let diagnostic = Diagnostic::new(self.to_string(), self.span(), label);
         match self {
@@ -83,9 +97,21 @@ impl ParserError {
                 kind: IntErrorKind::PosOverflow,
                 ..
             } => diagnostic.with_note(format!("the largest integer is {}", i64::MAX)),
+            ParserError::ChainedComparison { .. } => {
+                diagnostic.with_note("use `&&` to combine comparisons, e.g. `a < b && b < c`")
+            }
             _ => diagnostic,
         }
     }
+}
+
+/// How operators of the same precedence group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Assoc {
+    /// `a - b - c` is `(a - b) - c`.
+    Left,
+    /// `a < b < c` is an error.
+    None,
 }
 
 /// A recursive-descent parser in the style of rustc's: it always holds the
@@ -117,18 +143,33 @@ impl<'src> Parser<'src> {
     fn unary_op(kind: TokenKind) -> Option<UnOp> {
         match kind {
             TokenKind::Minus => Some(UnOp::Neg),
+            TokenKind::Bang => Some(UnOp::Not),
             _ => None,
         }
     }
 
     /// The binary operator a token stands for in infix position, with its
-    /// precedence. Higher binds tighter; all of them are left-associative.
-    fn binary_op(kind: TokenKind) -> Option<(BinOp, u32)> {
+    /// precedence (higher binds tighter) and associativity.
+    fn binary_op(kind: TokenKind) -> Option<(BinOp, u32, Assoc)> {
         match kind {
-            TokenKind::Plus => Some((BinOp::Add, 1)),
-            TokenKind::Minus => Some((BinOp::Sub, 1)),
-            TokenKind::Star => Some((BinOp::Mul, 2)),
-            TokenKind::Slash => Some((BinOp::Div, 2)),
+            // Logical
+            TokenKind::OrOr => Some((BinOp::Or, 1, Assoc::Left)),
+            TokenKind::AndAnd => Some((BinOp::And, 2, Assoc::Left)),
+
+            // Comparison
+            TokenKind::EqEq => Some((BinOp::Eq, 3, Assoc::None)),
+            TokenKind::Ne => Some((BinOp::Ne, 3, Assoc::None)),
+            TokenKind::Lt => Some((BinOp::Lt, 3, Assoc::None)),
+            TokenKind::Le => Some((BinOp::Le, 3, Assoc::None)),
+            TokenKind::Gt => Some((BinOp::Gt, 3, Assoc::None)),
+            TokenKind::Ge => Some((BinOp::Ge, 3, Assoc::None)),
+
+            // Arithmetic
+            TokenKind::Plus => Some((BinOp::Add, 4, Assoc::Left)),
+            TokenKind::Minus => Some((BinOp::Sub, 4, Assoc::Left)),
+            TokenKind::Star => Some((BinOp::Mul, 5, Assoc::Left)),
+            TokenKind::Slash => Some((BinOp::Div, 5, Assoc::Left)),
+
             _ => None,
         }
     }
@@ -221,6 +262,27 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn parse_if(&mut self) -> Result<Expr, ParserError> {
+        let start = self.expect(TokenKind::If)?.start;
+        let cond = self.parse_expr()?;
+        let t_branch = self.parse_block()?;
+        let (f_branch, end) = if let TokenKind::Else = self.token.kind {
+            self.bump();
+            // `else if …` chains: the else branch is another `if`.
+            let f_branch = if let TokenKind::If = self.token.kind {
+                self.parse_if()?
+            } else {
+                self.parse_block()?
+            };
+            let end = f_branch.span.end;
+            (Some(f_branch), end)
+        } else {
+            (None, t_branch.span.end)
+        };
+
+        Ok(Expr::if_expr(cond, t_branch, f_branch, start, end))
+    }
+
     fn parse_atom(&mut self) -> Result<Expr, ParserError> {
         match self.token.kind {
             TokenKind::Int => {
@@ -250,6 +312,7 @@ impl<'src> Parser<'src> {
                 let id = self.parse_ident()?;
                 Ok(Expr::var(id.name, id.span.start, id.span.end))
             }
+            TokenKind::If => self.parse_if(),
             TokenKind::Fun => {
                 let start = self.token.span.start;
                 self.bump();
@@ -326,16 +389,29 @@ impl<'src> Parser<'src> {
 
     fn parse_binary(&mut self, min: u32) -> Result<Expr, ParserError> {
         let mut lhs = self.parse_unary()?;
-        while let Some((op, prec)) = Parser::binary_op(self.token.kind)
+        // Precedence of the previous operator in this loop, if it was
+        // non-associative.
+        let mut prev_non_assoc = None;
+        while let Some((op, prec, assoc)) = Parser::binary_op(self.token.kind)
             && prec >= min
         {
+            // A non-associative operator cannot follow another one of the
+            // same precedence: `a < b < c` is an error, not `(a < b) < c`.
+            if assoc == Assoc::None && prev_non_assoc == Some(prec) {
+                return Err(ParserError::ChainedComparison {
+                    span: self.token.span,
+                });
+            }
             self.bump();
-            // `prec + 1`: an operator of the same precedence on the right
-            // ends the operand, which makes the operators left-associative.
+            // `prec + 1`: an operator of the same precedence on the right ends
+            // the operand, so it comes back to this loop. Left-associative
+            // operators continue here; non-associative ones hit the check
+            // above.
             let rhs = self.parse_binary(prec + 1)?;
             let start = lhs.span.start;
             let end = rhs.span.end;
             lhs = Expr::binary(op, lhs, rhs, start, end);
+            prev_non_assoc = (assoc == Assoc::None).then_some(prec);
         }
         Ok(lhs)
     }
@@ -549,6 +625,179 @@ mod test {
             parse_program(src).unwrap().to_string(),
             "AST:\nDEF add (a, b) = (a + b)\nDEF main () = add(1, add(2, 3))\n"
         );
+    }
+
+    #[test]
+    fn not() {
+        assert_eq!(ast("!a"), "(! a)");
+        assert_eq!(ast("!!a"), "(! (! a))");
+        assert_eq!(ast("!-a"), "(! (- a))");
+        // Prefix operators bind tighter than any binary operator.
+        assert_eq!(ast("!a && b"), "((! a) && b)");
+        assert_eq!(ast("-a < b"), "((- a) < b)");
+        assert_eq!(ast("!f(x)"), "(! f(x))");
+    }
+
+    #[test]
+    fn operator_precedence() {
+        // Lowest to highest: `||`, `&&`, comparisons, `+ -`, `* /`.
+        assert_eq!(ast("a || b && c"), "(a || (b && c))");
+        assert_eq!(ast("a && b || c"), "((a && b) || c)");
+        assert_eq!(ast("a == b && c"), "((a == b) && c)");
+        assert_eq!(ast("a && b != c"), "(a && (b != c))");
+        assert_eq!(ast("1 + 2 < 3 * 4"), "((1 + 2) < (3 * 4))");
+        assert_eq!(ast("a < b || c >= d && e"), "((a < b) || ((c >= d) && e))");
+    }
+
+    #[test]
+    fn comparison_operators() {
+        for op in ["==", "!=", "<", "<=", ">", ">="] {
+            let src = format!("a {op} b");
+            assert_eq!(ast(&src), format!("(a {op} b)"), "input: {src:?}");
+        }
+    }
+
+    #[test]
+    fn logical_operators_are_left_associative() {
+        assert_eq!(ast("a || b || c"), "((a || b) || c)");
+        assert_eq!(ast("a && b && c"), "((a && b) && c)");
+    }
+
+    #[test]
+    fn comparisons_cannot_be_chained() {
+        // The error points at the second comparison operator.
+        for (src, at) in [
+            ("a < b < c", 6),
+            ("a == b != c", 7),
+            ("a < b == c", 6),
+            ("a < b + 1 >= c", 10),
+            ("x && a <= b > c", 12),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(err, ParserError::ChainedComparison { span } if span.start == at),
+                "input: {src:?}, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn separate_comparisons_are_fine() {
+        assert_eq!(ast("a < b && b < c"), "((a < b) && (b < c))");
+        // Parentheses make the grouping explicit.
+        assert_eq!(ast("(a < b) == c"), "((a < b) == c)");
+        assert_eq!(ast("a == (b < c)"), "(a == (b < c))");
+    }
+
+    #[test]
+    fn chained_comparison_diagnostic() {
+        let src = "a < b < c";
+        let diag = parse(src).unwrap_err().diagnostic();
+        assert_eq!(diag.message, "comparison operators cannot be chained");
+        let (span, label) = diag.label.unwrap();
+        assert_eq!(text(src, span), "<");
+        assert_eq!(label, "cannot follow another comparison");
+        assert_eq!(
+            diag.notes,
+            ["use `&&` to combine comparisons, e.g. `a < b && b < c`"]
+        );
+    }
+
+    #[test]
+    fn if_expressions() {
+        assert_eq!(ast("if c { 1 }"), "(IF c BLOCK: { 1 })");
+        assert_eq!(
+            ast("if c { 1 } else { 2 }"),
+            "(IF c BLOCK: { 1 } BLOCK: { 2 })"
+        );
+        assert_eq!(
+            ast("if a < b && c { 1 } else { 2 }"),
+            "(IF ((a < b) && c) BLOCK: { 1 } BLOCK: { 2 })"
+        );
+    }
+
+    #[test]
+    fn else_if_chains() {
+        assert_eq!(
+            ast("if a { 1 } else if b { 2 } else { 3 }"),
+            "(IF a BLOCK: { 1 } (IF b BLOCK: { 2 } BLOCK: { 3 }))"
+        );
+        assert_eq!(
+            ast("if a { 1 } else if b { 2 }"),
+            "(IF a BLOCK: { 1 } (IF b BLOCK: { 2 }))"
+        );
+    }
+
+    #[test]
+    fn if_is_an_expression() {
+        assert_eq!(
+            ast("1 + if c { 2 } else { 3 }"),
+            "(1 + (IF c BLOCK: { 2 } BLOCK: { 3 }))"
+        );
+        assert_eq!(
+            ast("{ let x = if c { 1 } else { 2 }; x }"),
+            "BLOCK: { LET: x = (IF c BLOCK: { 1 } BLOCK: { 2 }) ; x }"
+        );
+        assert_eq!(
+            ast("f(if c { 1 } else { 2 })"),
+            "f((IF c BLOCK: { 1 } BLOCK: { 2 }))"
+        );
+    }
+
+    #[test]
+    fn if_spans() {
+        for src in [
+            "if c { 1 }",
+            "if c { 1 } else { 2 }",
+            "if a { 1 } else if b { 2 } else { 3 }",
+        ] {
+            assert_eq!(text(src, parse(src).unwrap().span), src);
+        }
+        let src = "if a { 1 } else if b { 2 }";
+        let ExprKind::If {
+            f_branch: else_branch,
+            ..
+        } = &parse(src).unwrap().kind
+        else {
+            panic!("expected an if");
+        };
+        assert_eq!(text(src, else_branch.as_ref().unwrap().span), "if b { 2 }");
+    }
+
+    #[test]
+    fn if_errors() {
+        for (src, expected, actual) in [
+            // Branches must be blocks.
+            ("if c 1", Expected::Token(TokenKind::LBrace), TokenKind::Int),
+            (
+                "if c { 1 } else 2",
+                Expected::Token(TokenKind::LBrace),
+                TokenKind::Int,
+            ),
+            (
+                "if c { 1 } else",
+                Expected::Token(TokenKind::LBrace),
+                TokenKind::Eof,
+            ),
+            // A missing condition: the block is read as the condition.
+            (
+                "if { 1 }",
+                Expected::Token(TokenKind::LBrace),
+                TokenKind::Eof,
+            ),
+            // `else` on its own.
+            ("else { 1 }", Expected::Expression, TokenKind::Else),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ParserError::UnexpectedToken { expected: e, actual: a, .. }
+                        if e == expected && a == actual
+                ),
+                "input: {src:?}, got: {err:?}"
+            );
+        }
     }
 
     #[test]

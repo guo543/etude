@@ -1,0 +1,7 @@
+Error: mismatched types
+   ╭─[ examples/errors/if_condition_not_bool.etd:1:19 ]
+   │
+ 1 │ def count(n) = if n { n - 1 } else { 0 };
+   │                   ┬
+   │                   ╰── expected `bool`, found `int`
+───╯

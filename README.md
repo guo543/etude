@@ -40,28 +40,32 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
 ## Where things stand
 
 - **Lexer** (`src/lexer.rs`): tokens carry only a kind and a span; it never
-  fails (bad characters become `Unknown`). Tokens: `+ - * / = => , ; ( ) { }`,
-  keywords `let def fun true false`, identifiers (ASCII letters, digits,
-  `_`), integers.
+  fails (bad characters become `Unknown`). Tokens: `+ - * /`,
+  `== != < <= > >=`, `! && ||`, `= => , ; ( ) { }`, keywords
+  `let def fun if else true false`, identifiers (ASCII letters, digits, `_`),
+  integers.
 - **Parser** (`src/parser.rs`): rustc-style recursive descent that always
   holds the current token. A program is a list of `def name(params) = expr;`.
-  Expressions: integers, `true`/`false`, variables, unary `-`, binary `+ - * /` (precedence
-  table in the parser), calls `f(a)(b)` on any expression, lambdas
-  `fun(params) => body`, and blocks `{ let x = e; e; tail }`. Every node has
-  a span; errors at end of input point right after the last token.
+  Expressions: integers, `true`/`false`, variables, unary `-` and `!`,
+  binary operators from a precedence table in the parser (`||` < `&&` <
+  comparisons < `+ -` < `* /`), calls `f(a)(b)` on any expression, lambdas
+  `fun(params) => body`, `if c { … } else if d { … } else { … }`, and blocks
+  `{ let x = e; e; tail }`. Every node has a span; errors at end of input
+  point right after the last token.
 - **Evaluator** (`src/eval.rs`): a tree walker that borrows from the AST.
   Top-level `def`s live in a global table and are closures with an empty
   captured environment; locals live in an immutable linked environment, so
-  closures capture by sharing it. Values: integers, booleans and functions. Integer
-  overflow, division by zero, wrong argument counts and type mismatches are
-  runtime errors.
+  closures capture by sharing it. Values: integers, booleans, unit `()` and
+  functions. `&&` and `||` short-circuit; `if` evaluates only the chosen
+  branch, so recursion terminates. Integer overflow, division by zero, wrong
+  argument counts and type mismatches are runtime errors.
 - **Errors** (`src/diagnostic.rs`): reported with ariadne. Each error's
   `Display` is the headline; `diagnostic()` adds the underlined location,
   label and notes.
 - **CLI** (`src/main.rs`, clap): `etude [--ast] [--color auto|always|never]
   <file>`.
-- **Tests:** 99 unit tests; 29 example programs (10 that run, 19 that must
-  fail with a specific report).
+- **Tests:** 132 unit tests; 34 example programs (13 that run, including
+  factorial and fibonacci, and 21 that must fail with a specific report).
 
 ## Design decisions so far
 
@@ -79,6 +83,15 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   because top-level definitions see each other in any order.
 - **Functions take a parameter list and are not curried.** Currying is
   written out: `def add(a) = fun(b) => a + b;`.
+- **`if` requires braces;** `else` is optional, and without it the `if` is
+  unit. Braces go where expressions follow each other (condition, then
+  branch); a construct that ends in a single expression (`def` and lambda
+  bodies) needs none.
+- **Comparisons cannot be chained:** `a < b < c` and `a == b < c` are
+  errors. `==`/`!=` share one precedence level with `<`, `<=`, `>`, `>=`, as
+  in Rust and Swift.
+- **`&&` and `||` short-circuit.** `==` works on integers, booleans and unit;
+  functions cannot be compared.
 - **The lexer never fails;** bad input becomes a token that the parser
   reports where it reaches it.
 
@@ -95,6 +108,8 @@ Each step ends with something that runs and is tested.
 - Tree-walking evaluator: globals table, immutable linked environment,
   borrowing from the AST; `main` must exist and take no parameters.
 - Lambdas and closures (`fun(params) => body`), currying, functions as values.
+- Booleans, comparisons, `!`/`&&`/`||` with short-circuiting, `if`/`else if`/
+  `else` as expressions, unit; factorial, fibonacci and mutual recursion run.
 - Error reports with ariadne; clap CLI with `--ast` and `--color`.
 - End-to-end example tests with `BLESS=1`.
 
@@ -103,35 +118,27 @@ Each step ends with something that runs and is tested.
 - [ ] **Duplicate top-level names are an error:** "`f` is defined more than
       once". Today the last definition silently wins. Give `Diagnostic`
       secondary labels so the report can also point at the first definition.
-- [ ] **Call-depth limit:** `def main() = main();` currently overflows the
-      Rust stack and aborts. Count call depth in the evaluator and report
-      "recursion too deep" instead.
+- [ ] **Call-depth limit** (now urgent, since recursion terminates and deep
+      recursion is realistic): `fact(100000)` overflows the Rust stack and
+      aborts. Count call depth in the evaluator and report "recursion too
+      deep" instead.
 - [ ] **`parse_comma_list`:** the parameter/argument loop exists three times
       (`def` parameters, lambda parameters, call arguments).
 - [ ] **Share `def` and lambda:** a `Lambda { params, body }` struct used by
       both `DeclKind::FunDecl { id, lambda }` and `ExprKind::Lambda`, since a
       `def` is a name bound to a lambda.
 
-## 2. Booleans, comparisons and `if`
+## 2. Booleans, comparisons and `if` — done
 
-- [ ] Lexer: `!`, `<`, `>`, and `==`, `!=`, `<=`, `>=`, `&&`, `||` (longest
-      match, like `=>`). Keywords `if`, `else` (`true`, `false` are already
-      lexed).
-- [x] `true`/`false` atoms in the parser; `Value::Bool` and `Type::Bool` in
-      the evaluator.
-- [ ] Parser: the comparison level (non-associative: `a < b < c` is an
-      error), `&&` and `||`, `!` in `unary_op`, and `if c { .. } else { .. }`
-      as an expression, including `else if`.
-- [ ] Evaluator: comparisons produce booleans; `&&` and `||` skip the right
-      side when the left side decides the result.
-- [ ] Examples: factorial and fibonacci (recursion can now terminate).
+See "Done" above.
 
 ## 3. Unit and `print`
 
-- [ ] `()` literal and `Value::Unit`.
-- [ ] Built-in `print(x)`, returning unit.
-- [ ] Optional block tail (a missing tail means unit); `if` without `else`
-      has type unit.
+- [x] `Value::Unit` and `Type::Unit`; `if` without `else` is unit.
+- [ ] `()` literal: `(` directly followed by `)` in `parse_atom`.
+- [ ] Built-in functions (`Value::Builtin` or a native case in `Closure`);
+      `print(x)` first, returning unit.
+- [ ] Optional block tail (a missing tail means unit).
 
 ## 4. Global `let`
 
@@ -203,6 +210,15 @@ A separate pass between parsing and running.
 - [ ] Skip ahead to `;`, `}`, `def`, `let` or `type` after an error.
 - [ ] `ExprKind::Error` nodes that later passes accept without producing
       follow-up errors.
+
+## Open questions
+
+- **Top-level `;`:** drop it entirely? Unambiguous, since every top-level
+  item starts with a keyword; the cost is that a top-level `let` would look
+  different from one in a block. Decide together with global `let`.
+- **Statements ending in `}` without `;`** (`if c { print(x) }`): allow when
+  the statement is a block or an `if`? A following line starting with `-` or
+  `(` would continue the expression. Decide once `print` exists.
 
 ## Later
 

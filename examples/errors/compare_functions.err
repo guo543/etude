@@ -1,0 +1,7 @@
+Error: values of type `fun` cannot be compared
+   ╭─[ examples/errors/compare_functions.etd:3:14 ]
+   │
+ 3 │ def main() = double == double;
+   │              ───┬──
+   │                 ╰──── this is a function
+───╯

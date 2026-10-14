@@ -7,6 +7,7 @@ use std::{collections::HashMap, fmt, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
+    Unit,
     Int,
     Bool,
     Fun,
@@ -16,6 +17,7 @@ pub enum Type {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Type::Unit => write!(f, "()"),
             Type::Int => write!(f, "int"),
             Type::Fun => write!(f, "fun"),
             Type::Bool => write!(f, "bool"),
@@ -46,6 +48,12 @@ pub enum EvalError {
     MissingMain,
     /// `main` has parameters; the span covers them.
     MainHasParams(Span),
+    /// `==` or `!=` on a value that cannot be compared, such as a function;
+    /// the span is that operand.
+    NotComparable {
+        ty: Type,
+        span: Span,
+    },
 }
 
 /// The headline of the error; `diagnostic` adds the location and details.
@@ -61,6 +69,9 @@ impl fmt::Display for EvalError {
             EvalError::ArgumentCountMismatch { .. } => write!(f, "wrong number of arguments"),
             EvalError::MissingMain => write!(f, "no `main` function"),
             EvalError::MainHasParams(_) => write!(f, "`main` must not take parameters"),
+            EvalError::NotComparable { ty, .. } => {
+                write!(f, "values of type `{ty}` cannot be compared")
+            }
         }
     }
 }
@@ -95,6 +106,7 @@ impl EvalError {
             EvalError::MissingMain => Diagnostic::without_location(self.to_string())
                 .with_note("a program starts by calling `def main() = ...;`"),
             EvalError::MainHasParams(span) => at(span, "remove these parameters".into()),
+            EvalError::NotComparable { span, .. } => at(span, "this is a function".into()),
         }
     }
 }
@@ -108,6 +120,7 @@ pub struct Closure<'ast> {
 
 #[derive(Debug, Clone)]
 pub enum Value<'ast> {
+    Unit,
     Int(i64),
     Bool(bool),
     Fun(Rc<Closure<'ast>>),
@@ -116,6 +129,7 @@ pub enum Value<'ast> {
 impl Value<'_> {
     pub fn ty(&self) -> Type {
         match self {
+            Value::Unit => Type::Unit,
             Value::Int(_) => Type::Int,
             Value::Fun { .. } => Type::Fun,
             Value::Bool(_) => Type::Bool,
@@ -126,6 +140,7 @@ impl Value<'_> {
 impl fmt::Display for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::Unit => write!(f, "()"),
             Value::Int(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Fun(closure) => {
@@ -188,6 +203,39 @@ struct TreeEval<'ast> {
     globals: HashMap<&'ast str, Value<'ast>>,
 }
 
+fn expect_int(value: Value<'_>, span: Span) -> Result<i64, EvalError> {
+    match value {
+        Value::Int(n) => Ok(n),
+        other => Err(EvalError::TypeMismatch {
+            expected: Type::Int,
+            actual: other.ty(),
+            span,
+        }),
+    }
+}
+
+fn expect_bool(value: Value<'_>, span: Span) -> Result<bool, EvalError> {
+    match value {
+        Value::Bool(b) => Ok(b),
+        other => Err(EvalError::TypeMismatch {
+            expected: Type::Bool,
+            actual: other.ty(),
+            span,
+        }),
+    }
+}
+
+fn expect_fun<'ast>(value: Value<'ast>, span: Span) -> Result<Rc<Closure<'ast>>, EvalError> {
+    match value {
+        Value::Fun(b) => Ok(b),
+        other => Err(EvalError::TypeMismatch {
+            expected: Type::Fun,
+            actual: other.ty(),
+            span,
+        }),
+    }
+}
+
 impl<'ast> TreeEval<'ast> {
     fn new() -> Self {
         TreeEval {
@@ -244,13 +292,7 @@ impl<'ast> TreeEval<'ast> {
             }
             ExprKind::Call { callee, args } => {
                 let f = self.eval_expr(callee, env)?;
-                let Value::Fun(closure) = f else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: Type::Fun,
-                        actual: f.ty(),
-                        span: callee.span,
-                    });
-                };
+                let closure = expect_fun(f, callee.span)?;
                 if closure.params.len() != args.len() {
                     return Err(EvalError::ArgumentCountMismatch {
                         expected: closure.params.len(),
@@ -284,39 +326,112 @@ impl<'ast> TreeEval<'ast> {
                         };
                         Ok(Value::Int(res))
                     }
+                    UnOp::Not => {
+                        let Value::Bool(b) = e else {
+                            return Err(EvalError::TypeMismatch {
+                                expected: Type::Bool,
+                                actual: e.ty(),
+                                span: operand.span,
+                            });
+                        };
+                        Ok(Value::Bool(!b))
+                    }
+                }
+            }
+            // `&&` and `||` short-circuit: the right operand is evaluated only
+            // when the left one does not already decide the result, so they
+            // come before the arm that evaluates both operands.
+            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), lhs, rhs) => {
+                let l = expect_bool(self.eval_expr(lhs, env)?, lhs.span)?;
+                match (op, l) {
+                    (BinOp::And, false) => Ok(Value::Bool(false)),
+                    (BinOp::Or, true) => Ok(Value::Bool(true)),
+                    _ => {
+                        let r = expect_bool(self.eval_expr(rhs, env)?, rhs.span)?;
+                        Ok(Value::Bool(r))
+                    }
                 }
             }
             ExprKind::Binary(op, lhs, rhs) => {
                 let lv = self.eval_expr(lhs, env)?;
                 let rv = self.eval_expr(rhs, env)?;
 
-                let Value::Int(l) = lv else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: Type::Int,
-                        actual: lv.ty(),
-                        span: lhs.span,
-                    });
-                };
-
-                let Value::Int(r) = rv else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: Type::Int,
-                        actual: rv.ty(),
-                        span: rhs.span,
-                    });
-                };
-
-                let res = match op {
-                    BinOp::Add => l.checked_add(r),
-                    BinOp::Sub => l.checked_sub(r),
-                    BinOp::Mul => l.checked_mul(r),
-                    BinOp::Div if r == 0 => {
-                        return Err(EvalError::DivisionByZero(rhs.span));
+                match op {
+                    BinOp::And | BinOp::Or => unreachable!("handled above"),
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                        let l = expect_int(lv, lhs.span)?;
+                        let r = expect_int(rv, rhs.span)?;
+                        let result = match op {
+                            BinOp::Add => l.checked_add(r),
+                            BinOp::Sub => l.checked_sub(r),
+                            BinOp::Mul => l.checked_mul(r),
+                            BinOp::Div if r == 0 => {
+                                return Err(EvalError::DivisionByZero(rhs.span));
+                            }
+                            BinOp::Div => l.checked_div(r),
+                            _ => unreachable!(),
+                        };
+                        result
+                            .ok_or(EvalError::IntegerOverflow(expr.span))
+                            .map(Value::Int)
                     }
-                    BinOp::Div => l.checked_div(r),
-                };
-                res.ok_or(EvalError::IntegerOverflow(expr.span))
-                    .map(Value::Int)
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        let l = expect_int(lv, lhs.span)?;
+                        let r = expect_int(rv, rhs.span)?;
+                        Ok(Value::Bool(match op {
+                            BinOp::Lt => l < r,
+                            BinOp::Le => l <= r,
+                            BinOp::Gt => l > r,
+                            BinOp::Ge => l >= r,
+                            _ => unreachable!(),
+                        }))
+                    }
+                    BinOp::Eq | BinOp::Ne => {
+                        let equal = match (&lv, &rv) {
+                            (Value::Int(l), Value::Int(r)) => l == r,
+                            (Value::Bool(l), Value::Bool(r)) => l == r,
+                            (Value::Unit, Value::Unit) => true,
+                            (Value::Fun(_), _) => {
+                                return Err(EvalError::NotComparable {
+                                    ty: Type::Fun,
+                                    span: lhs.span,
+                                });
+                            }
+                            (_, Value::Fun(_)) => {
+                                return Err(EvalError::NotComparable {
+                                    ty: Type::Fun,
+                                    span: rhs.span,
+                                });
+                            }
+                            // An integer and a boolean.
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: lv.ty(),
+                                    actual: rv.ty(),
+                                    span: rhs.span,
+                                });
+                            }
+                        };
+                        Ok(Value::Bool(if let BinOp::Eq = op { equal } else { !equal }))
+                    }
+                }
+            }
+            ExprKind::If {
+                cond,
+                t_branch,
+                f_branch,
+            } => {
+                let c = expect_bool(self.eval_expr(cond, env)?, cond.span)?;
+                match (c, f_branch) {
+                    (true, Some(_)) => self.eval_expr(t_branch, env),
+                    (false, Some(f_branch)) => self.eval_expr(f_branch, env),
+                    (true, None) => {
+                        // evaluate and discard for side effects
+                        let _ = self.eval_expr(t_branch, env)?;
+                        Ok(Value::Unit)
+                    }
+                    (_, None) => Ok(Value::Unit),
+                }
             }
             ExprKind::Lambda { params, body } => {
                 let f = Value::Fun(Rc::new(Closure {
@@ -676,5 +791,226 @@ mod test {
         let src = "def main() = true + 1;";
         let (_, label) = error(src).diagnostic().label.unwrap();
         assert_eq!(label, "expected `int`, found `bool`");
+    }
+
+    #[test]
+    fn logical_operators() {
+        for (src, expected) in [
+            ("true && true", "true"),
+            ("true && false", "false"),
+            ("false && true", "false"),
+            ("false || false", "false"),
+            ("false || true", "true"),
+            ("true || false", "true"),
+        ] {
+            assert_eq!(printed(&format!("def main() = {src};")), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn logical_operators_short_circuit() {
+        // The right side would divide by zero; it must not be evaluated.
+        assert_eq!(printed("def main() = false && (1 / 0 == 0);"), "false");
+        assert_eq!(printed("def main() = true || (1 / 0 == 0);"), "true");
+        // When the left side does not decide, the right side runs.
+        assert!(matches!(
+            error("def main() = true && (1 / 0 == 0);"),
+            EvalError::DivisionByZero(_)
+        ));
+    }
+
+    #[test]
+    fn logical_operators_need_booleans() {
+        let src = "def main() = true && 1;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Bool, actual: Type::Int, span }
+                if text(src, span) == "1"
+        ));
+        let src = "def main() = 0 || true;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Bool, actual: Type::Int, span }
+                if text(src, span) == "0"
+        ));
+        let (_, label) = error("def main() = true && 1;").diagnostic().label.unwrap();
+        assert_eq!(label, "expected `bool`, found `int`");
+    }
+
+    #[test]
+    fn equality_on_integers_and_booleans() {
+        for (src, expected) in [
+            ("1 == 1", "true"),
+            ("1 == 2", "false"),
+            ("1 != 2", "true"),
+            ("1 != 1", "false"),
+            ("true == true", "true"),
+            ("true == false", "false"),
+            ("true != false", "true"),
+            ("false != false", "false"),
+            // The results of comparisons are booleans too.
+            ("(1 < 2) == (3 < 4)", "true"),
+        ] {
+            assert_eq!(printed(&format!("def main() = {src};")), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn equality_needs_matching_types() {
+        let src = "def main() = 1 == true;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Bool, span }
+                if text(src, span) == "true"
+        ));
+        let src = "def main() = false != 0;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Bool, actual: Type::Int, span }
+                if text(src, span) == "0"
+        ));
+    }
+
+    #[test]
+    fn functions_cannot_be_compared() {
+        // Whichever side the function is on, that side is reported.
+        for (src, operand) in [
+            ("def f() = 1; def main() = f == f;", "f"),
+            ("def f() = 1; def main() = f != 1;", "f"),
+            ("def f() = 1; def main() = 1 == f;", "f"),
+            ("def main() = 1 == fun() => 1;", "fun() => 1"),
+        ] {
+            let err = error(src);
+            assert!(
+                matches!(&err, EvalError::NotComparable { ty: Type::Fun, span } if text(src, *span) == operand),
+                "input: {src:?}, got: {err:?}"
+            );
+        }
+        // `f == 1`: the left side is reported even though the right is an integer.
+        let src = "def f() = 1; def main() = f == 1;";
+        let EvalError::NotComparable { span, .. } = error(src) else {
+            panic!("expected NotComparable");
+        };
+        assert_eq!(span.start, src.find("f ==").unwrap());
+    }
+
+    #[test]
+    fn not_comparable_diagnostic() {
+        let src = "def f() = 1; def main() = f == f;";
+        let diag = error(src).diagnostic();
+        assert_eq!(diag.message, "values of type `fun` cannot be compared");
+        assert_eq!(diag.label.unwrap().1, "this is a function");
+    }
+
+    #[test]
+    fn if_else_picks_a_branch() {
+        assert_eq!(printed("def main() = if true { 1 } else { 2 };"), "1");
+        assert_eq!(printed("def main() = if false { 1 } else { 2 };"), "2");
+        assert_eq!(
+            printed("def main() = if 1 < 2 && 2 < 3 { 1 } else { 2 };"),
+            "1"
+        );
+        // The branches are blocks with their own scope.
+        let src = "def main() = { let x = 1; if x == 1 { let x = 10; x } else { x } };";
+        assert_eq!(printed(src), "10");
+    }
+
+    #[test]
+    fn else_if_chains() {
+        let src = "def sign(n) = if n < 0 { -1 } else if n == 0 { 0 } else { 1 };
+                   def main() = sign(N);";
+        for (n, expected) in [("-5", "-1"), ("0", "0"), ("7", "1")] {
+            assert_eq!(printed(&src.replace('N', n)), expected, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn only_the_chosen_branch_is_evaluated() {
+        // The other branch would divide by zero.
+        assert_eq!(printed("def main() = if true { 1 } else { 1 / 0 };"), "1");
+        assert_eq!(printed("def main() = if false { 1 / 0 } else { 2 };"), "2");
+        assert_eq!(printed("def main() = if false { 1 / 0 };"), "()");
+    }
+
+    #[test]
+    fn if_without_else_is_unit() {
+        assert_eq!(printed("def main() = if true { 1 };"), "()");
+        assert_eq!(printed("def main() = if false { 1 };"), "()");
+        let ast = Parser::new(Lexer::new("def main() = if true { 1 };"))
+            .parse()
+            .unwrap();
+        assert_eq!(eval(&ast).unwrap().ty(), Type::Unit);
+        // The branch still runs: an error inside it is reported.
+        assert!(matches!(
+            error("def main() = if true { 1 / 0 };"),
+            EvalError::DivisionByZero(_)
+        ));
+    }
+
+    #[test]
+    fn if_condition_must_be_a_boolean() {
+        let src = "def main() = if 1 { 2 } else { 3 };";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Bool, actual: Type::Int, span }
+                if text(src, span) == "1"
+        ));
+        let src = "def f() = 1; def main() = if f { 2 } else { 3 };";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Bool, actual: Type::Fun, span }
+                if text(src, span) == "f"
+        ));
+    }
+
+    #[test]
+    fn unit_values() {
+        // Unit compares equal to itself.
+        assert_eq!(
+            printed("def main() = (if false { 1 }) == (if true { 2 });"),
+            "true"
+        );
+        assert_eq!(
+            printed("def main() = (if false { 1 }) != (if false { 2 });"),
+            "false"
+        );
+        // But it is not a number or a boolean.
+        let src = "def main() = (if false { 1 }) + 1;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch {
+                expected: Type::Int,
+                actual: Type::Unit,
+                ..
+            }
+        ));
+        let src = "def main() = (if false { 1 }) == 1;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Unit, actual: Type::Int, span }
+                if text(src, span) == "1"
+        ));
+        let (_, label) = error(src).diagnostic().label.unwrap();
+        assert_eq!(label, "expected `()`, found `int`");
+    }
+
+    #[test]
+    fn recursion_terminates_with_if() {
+        let fact = "def fact(n) = if n == 0 { 1 } else { n * fact(n - 1) };";
+        assert_eq!(
+            printed(&format!("{fact} def main() = fact(10);")),
+            "3628800"
+        );
+        assert_eq!(printed(&format!("{fact} def main() = fact(0);")), "1");
+        let fib = "def fib(n) = if n < 2 { n } else { fib(n - 1) + fib(n - 2) };";
+        assert_eq!(printed(&format!("{fib} def main() = fib(20);")), "6765");
+    }
+
+    #[test]
+    fn mutual_recursion() {
+        let src = "def even(n) = if n == 0 { true } else { odd(n - 1) };
+                   def odd(n) = if n == 0 { false } else { even(n - 1) };
+                   def main() = even(10) && odd(7) && !even(3);";
+        assert_eq!(printed(src), "true");
     }
 }
