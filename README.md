@@ -1,5 +1,7 @@
 # etude
 
+[![CI](https://github.com/guo543/etude/actions/workflows/ci.yml/badge.svg)](https://github.com/guo543/etude/actions/workflows/ci.yml)
+
 A small, expression-oriented programming language that leans functional
 (immutable bindings, first-class functions, closures) while still allowing
 side effects. Written in Rust as a learning project.
