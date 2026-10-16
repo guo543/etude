@@ -1,0 +1,9 @@
+Error: recursion limit reached
+   ╭─[ examples/errors/infinite_recursion.etd:1:43 ]
+   │
+ 1 │ def countdown(n) = if n == 0 { 0 } else { countdown(n + 1) };
+   │                                           ────────┬───────
+   │                                                   ╰───────── this call would exceed 10000 nested calls
+   │
+   │ Note: does the function have a base case that stops the recursion?
+───╯

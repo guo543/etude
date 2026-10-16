@@ -1,0 +1,3 @@
+def countdown(n) = if n == 0 { 0 } else { countdown(n + 1) };
+
+def main() = countdown(10);

@@ -3,7 +3,20 @@ use crate::{
     diagnostic::Diagnostic,
     span::Span,
 };
-use std::{collections::HashMap, fmt, rc::Rc};
+use std::{cell::Cell, collections::HashMap, fmt, rc::Rc};
+
+/// How many calls may be in progress at once. Deeper recursion is reported
+/// as an error, the same in every build, so that a runaway program stops
+/// with a clear message.
+pub const MAX_CALL_DEPTH: usize = 10_000;
+
+/// When less than this much stack is left, `eval_expr` continues on a new
+/// segment of `STACK_SEGMENT` bytes. The evaluator recurses once per nested
+/// expression, so without this a deeply nested body overflows the native
+/// stack (about 400 calls deep in a debug build) long before
+/// `MAX_CALL_DEPTH`. The values are rustc's.
+const STACK_RED_ZONE: usize = 100 * 1024;
+const STACK_SEGMENT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
@@ -44,6 +57,12 @@ pub enum EvalError {
         actual: usize,
         span: Span,
     },
+    /// More than `limit` calls in progress at once, almost always infinite
+    /// recursion; the span is the call that went over.
+    RecursionLimit {
+        limit: usize,
+        span: Span,
+    },
     /// The program defines no `main` function.
     MissingMain,
     /// `main` has parameters; the span covers them.
@@ -67,6 +86,7 @@ impl fmt::Display for EvalError {
             EvalError::IntegerOverflow(_) => write!(f, "integer overflow"),
             EvalError::TypeMismatch { .. } => write!(f, "mismatched types"),
             EvalError::ArgumentCountMismatch { .. } => write!(f, "wrong number of arguments"),
+            EvalError::RecursionLimit { .. } => write!(f, "recursion limit reached"),
             EvalError::MissingMain => write!(f, "no `main` function"),
             EvalError::MainHasParams(_) => write!(f, "`main` must not take parameters"),
             EvalError::NotComparable { ty, .. } => {
@@ -103,6 +123,10 @@ impl EvalError {
                     if *expected == 1 { "" } else { "s" }
                 ),
             ),
+            EvalError::RecursionLimit { limit, span } => {
+                at(span, format!("this call would exceed {limit} nested calls"))
+                    .with_note("does the function have a base case that stops the recursion?")
+            }
             EvalError::MissingMain => Diagnostic::without_location(self.to_string())
                 .with_note("a program starts by calling `def main() = ...;`"),
             EvalError::MainHasParams(span) => at(span, "remove these parameters".into()),
@@ -201,6 +225,10 @@ impl<'ast> Env<'ast> {
 
 struct TreeEval<'ast> {
     globals: HashMap<&'ast str, Value<'ast>>,
+    /// Calls currently in progress. A `Cell` because evaluation takes
+    /// `&self`.
+    depth: Cell<usize>,
+    max_depth: usize,
 }
 
 fn expect_int(value: Value<'_>, span: Span) -> Result<i64, EvalError> {
@@ -238,8 +266,14 @@ fn expect_fun<'ast>(value: Value<'ast>, span: Span) -> Result<Rc<Closure<'ast>>,
 
 impl<'ast> TreeEval<'ast> {
     fn new() -> Self {
+        Self::with_max_depth(MAX_CALL_DEPTH)
+    }
+
+    fn with_max_depth(max_depth: usize) -> Self {
         TreeEval {
             globals: HashMap::new(),
+            depth: Cell::new(0),
+            max_depth,
         }
     }
 
@@ -275,6 +309,12 @@ impl<'ast> TreeEval<'ast> {
     }
 
     fn eval_expr(&self, expr: &'ast Expr, env: &Env<'ast>) -> Result<Value<'ast>, EvalError> {
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_SEGMENT, || {
+            self.eval_expr_inner(expr, env)
+        })
+    }
+
+    fn eval_expr_inner(&self, expr: &'ast Expr, env: &Env<'ast>) -> Result<Value<'ast>, EvalError> {
         match &expr.kind {
             ExprKind::Unit => Ok(Value::Unit),
             ExprKind::Int(n) => Ok(Value::Int(*n)),
@@ -305,7 +345,19 @@ impl<'ast> TreeEval<'ast> {
                     closure_env = closure_env.bind(param, v);
                 }
 
-                self.eval_expr(closure.body, &closure_env)
+                let depth = self.depth.get();
+                if depth == self.max_depth {
+                    return Err(EvalError::RecursionLimit {
+                        limit: self.max_depth,
+                        span: expr.span,
+                    });
+                }
+                // Nothing between `set` and the restore can return early,
+                // so the count stays right even when the body fails.
+                self.depth.set(depth + 1);
+                let result = self.eval_expr(closure.body, &closure_env);
+                self.depth.set(depth);
+                result
             }
             ExprKind::Unary(op, operand) => {
                 let e = self.eval_expr(operand, env)?;
@@ -485,6 +537,98 @@ mod test {
     fn main_must_exist() {
         assert_eq!(error("def f() = 1;"), EvalError::MissingMain);
         assert_eq!(error(""), EvalError::MissingMain);
+    }
+
+    /// Run `src` with a lower call limit, so tests stay small and fast.
+    fn eval_with_max_depth(src: &str, max_depth: usize) -> Result<String, EvalError> {
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        TreeEval::with_max_depth(max_depth)
+            .eval(&ast)
+            .map(|v| v.to_string())
+    }
+
+    #[test]
+    fn infinite_recursion_hits_the_limit() {
+        let src = "def f(n) = f(n + 1); def main() = f(0);";
+        let EvalError::RecursionLimit { limit, span } = error(src) else {
+            panic!("expected RecursionLimit");
+        };
+        assert_eq!(limit, MAX_CALL_DEPTH);
+        // The call that went over is the recursive one, not the one in `main`.
+        assert_eq!(span.start, src.find("f(n + 1)").unwrap());
+        assert_eq!(text(src, span), "f(n + 1)");
+    }
+
+    #[test]
+    fn recursion_up_to_the_limit_is_fine() {
+        let count = "def f(n) = if n == 0 { 0 } else { 1 + f(n - 1) };";
+        // `f(n)` makes n + 1 calls.
+        let src = format!("{count} def main() = f({});", MAX_CALL_DEPTH - 1);
+        assert_eq!(printed(&src), (MAX_CALL_DEPTH - 1).to_string());
+        let src = format!("{count} def main() = f({});", MAX_CALL_DEPTH);
+        assert!(matches!(error(&src), EvalError::RecursionLimit { .. }));
+    }
+
+    #[test]
+    fn depth_counts_calls_in_progress_not_calls_made() {
+        // Each `f(9)` returns before the next starts, so the depth goes back
+        // down and 30 calls in total fit under a limit of 10.
+        let src = "def f(n) = if n == 0 { 0 } else { 1 + f(n - 1) };
+                   def main() = f(9) + f(9) + f(9);";
+        assert_eq!(eval_with_max_depth(src, 10).unwrap(), "27");
+        assert!(matches!(
+            eval_with_max_depth(
+                "def f(n) = if n == 0 { 0 } else { f(n - 1) }; def main() = f(10);",
+                10
+            ),
+            Err(EvalError::RecursionLimit { limit: 10, .. })
+        ));
+    }
+
+    #[test]
+    fn mutual_and_lambda_recursion_count_too() {
+        let src = "def ping(n) = pong(n + 1); def pong(n) = ping(n + 1); def main() = ping(0);";
+        assert!(matches!(
+            eval_with_max_depth(src, 50),
+            Err(EvalError::RecursionLimit { limit: 50, .. })
+        ));
+        // Recursion through a function passed as an argument.
+        let src =
+            "def apply(g, x) = g(g, x); def main() = apply(fun(self, n) => self(self, n), 0);";
+        assert!(matches!(
+            eval_with_max_depth(src, 50),
+            Err(EvalError::RecursionLimit { limit: 50, .. })
+        ));
+    }
+
+    #[test]
+    fn deeply_nested_bodies_do_not_overflow_the_stack() {
+        // Each call nests 30 blocks and `if`s, many native frames per call.
+        // Without stack growth this overflows long before the limit.
+        let mut body = String::from("f(n + 1)");
+        for i in 0..30 {
+            body = format!("{{ let x{i} = 1; if true {{ 1 + ({body}) }} else {{ 0 }} }}");
+        }
+        let src = format!("def f(n) = {body}; def main() = f(0);");
+        assert!(matches!(
+            eval_with_max_depth(&src, 1_000),
+            Err(EvalError::RecursionLimit { limit: 1_000, .. })
+        ));
+    }
+
+    #[test]
+    fn recursion_limit_diagnostic() {
+        let diag = EvalError::RecursionLimit {
+            limit: 10,
+            span: Span { start: 0, end: 1 },
+        }
+        .diagnostic();
+        assert_eq!(diag.message, "recursion limit reached");
+        assert_eq!(
+            diag.label.unwrap().1,
+            "this call would exceed 10 nested calls"
+        );
+        assert_eq!(diag.notes.len(), 1);
     }
 
     #[test]
