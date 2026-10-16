@@ -220,6 +220,24 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn parse_comma_list<T>(
+        &mut self,
+        close: TokenKind,
+        mut parse_elem: impl FnMut(&mut Self) -> Result<T, ParserError>,
+    ) -> Result<Vec<T>, ParserError> {
+        let mut res = Vec::new();
+        while !self.peek_is(close) {
+            let elem = parse_elem(self)?;
+            res.push(elem);
+            if self.peek_is(TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        Ok(res)
+    }
+
     fn parse_ident(&mut self) -> Result<Ident, ParserError> {
         let span = self.expect(TokenKind::Ident)?;
         Ok(Ident {
@@ -316,21 +334,11 @@ impl<'src> Parser<'src> {
             TokenKind::Fun => {
                 let start = self.token.span.start;
                 self.bump();
-                self.expect(TokenKind::LParen)?;
-                let mut params = Vec::<Ident>::new();
-                if !self.peek_is(TokenKind::RParen) {
-                    loop {
-                        let param = self.parse_ident()?;
-                        params.push(param);
-                        if self.peek_is(TokenKind::Comma) {
-                            self.bump();
-                        } else {
-                            break;
-                        }
-                    }
-                }
 
+                self.expect(TokenKind::LParen)?;
+                let params = self.parse_comma_list(TokenKind::RParen, Self::parse_ident)?;
                 self.expect(TokenKind::RParen)?;
+
                 self.expect(TokenKind::FatArrow)?;
 
                 let body = self.parse_expr()?;
@@ -363,19 +371,8 @@ impl<'src> Parser<'src> {
 
         while self.peek_is(TokenKind::LParen) {
             self.bump();
+            let args = self.parse_comma_list(TokenKind::RParen, Self::parse_expr)?;
             let start = expr.span.start;
-            let mut args = Vec::new();
-            if !self.peek_is(TokenKind::RParen) {
-                loop {
-                    let arg = self.parse_expr()?;
-                    args.push(arg);
-                    if self.peek_is(TokenKind::Comma) {
-                        self.bump();
-                    } else {
-                        break;
-                    }
-                }
-            }
             let end = self.expect(TokenKind::RParen)?.end;
             expr = Expr::call(expr, args, start, end)
         }
@@ -433,18 +430,7 @@ impl<'src> Parser<'src> {
         let id = self.parse_ident()?;
 
         self.expect(TokenKind::LParen)?;
-        let mut params = Vec::<Ident>::new();
-        if !self.peek_is(TokenKind::RParen) {
-            loop {
-                let param = self.parse_ident()?;
-                params.push(param);
-                if self.peek_is(TokenKind::Comma) {
-                    self.bump();
-                } else {
-                    break;
-                }
-            }
-        }
+        let params = self.parse_comma_list(TokenKind::RParen, Self::parse_ident)?;
 
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::Eq)?;
@@ -603,11 +589,34 @@ mod test {
     }
 
     #[test]
+    fn trailing_commas() {
+        assert_eq!(ast("f(1,)"), "f(1)");
+        assert_eq!(ast("f(1, 2,)"), "f(1, 2)");
+        assert_eq!(ast("f(\n    1,\n    2,\n)"), "f(1, 2)");
+        assert_eq!(ast("f(1,)(2,)"), "f(1)(2)");
+        assert_eq!(ast("fun(x,) => x"), "FUN (x) => x");
+        assert_eq!(ast("fun(x, y,) => x"), "FUN (x, y) => x");
+        assert_eq!(
+            parse_program("def f(a, b,) = a;").unwrap().to_string(),
+            "AST:\nDEF f (a, b) = a\n"
+        );
+        // The comma does not count as an argument or end up in the call's span.
+        let src = "f(1,)";
+        let expr = parse(src).unwrap();
+        let ExprKind::Call { args, .. } = &expr.kind else {
+            panic!("expected a call, got {expr}");
+        };
+        assert_eq!(args.len(), 1);
+        assert_eq!(text(src, expr.span), "f(1,)");
+    }
+
+    #[test]
     fn call_errors() {
-        // No trailing comma, no empty argument.
+        // A trailing comma is fine, but an empty argument is not.
         for (src, expected, actual) in [
-            ("f(1,)", Expected::Expression, TokenKind::RParen),
             ("f(,)", Expected::Expression, TokenKind::Comma),
+            ("f(1,,2)", Expected::Expression, TokenKind::Comma),
+            ("f(1,", Expected::Expression, TokenKind::Eof),
             ("f(", Expected::Expression, TokenKind::Eof),
             ("f(1 2)", Expected::Token(TokenKind::RParen), TokenKind::Int),
             ("f(1", Expected::Token(TokenKind::RParen), TokenKind::Eof),
@@ -997,9 +1006,9 @@ mod test {
                 TokenKind::Ident,
             ),
             (
-                "fun(x,) => x",
+                "fun(x,,y) => x",
                 Expected::Token(TokenKind::Ident),
-                TokenKind::RParen,
+                TokenKind::Comma,
             ),
             (
                 "fun(1) => x",
@@ -1298,12 +1307,12 @@ mod test {
                 ..
             })
         ));
-        // No trailing comma, and no empty parameter between commas.
+        // A trailing comma is fine, but an empty parameter is not.
         assert!(matches!(
-            parse_program("def f(a,) = 1"),
+            parse_program("def f(a,,b) = 1"),
             Err(ParserError::UnexpectedToken {
                 expected: Expected::Token(TokenKind::Ident),
-                actual: TokenKind::RParen,
+                actual: TokenKind::Comma,
                 span: Span { start: 8, end: 9 },
             })
         ));

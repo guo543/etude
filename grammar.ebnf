@@ -57,7 +57,8 @@ global_let  = "let" IDENT "=" expr ";" ;
  * type `int -> int -> int`, called as `add(1)(2)`. *)
 def         = "def" IDENT "(" [ params ] ")" "=" expr ";" ;
 
-params      = IDENT { "," IDENT } ;
+(* A trailing comma is allowed in parameter and argument lists. *)
+params      = IDENT { "," IDENT } [ "," ] ;
 
 
 (* ===================================================================== *)
@@ -88,7 +89,7 @@ unary       = ( "-" | "!" ) unary
  * there is no implicit partial application. *)
 postfix     = atom { call_args } ;
 
-call_args   = "(" [ expr { "," expr } ] ")" ;
+call_args   = "(" [ expr { "," expr } [ "," ] ] ")" ;
 
 atom        = INT
             | "true"
