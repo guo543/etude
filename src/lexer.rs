@@ -218,7 +218,7 @@ impl<'src> Lexer<'src> {
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
             '}' => TokenKind::RBrace,
-            c if c.is_ascii_alphabetic() => {
+            c if c.is_ascii_alphabetic() || c == '_' => {
                 self.eat_while(|c| c.is_ascii_alphanumeric() || c == '_');
                 match &self.src[start..self.pos()] {
                     "let" => TokenKind::Let,
@@ -232,7 +232,7 @@ impl<'src> Lexer<'src> {
                 }
             }
             c if c.is_ascii_digit() => {
-                self.eat_while(|c| c.is_ascii_alphanumeric());
+                self.eat_while(|c| c.is_ascii_alphanumeric() || c == '_');
                 TokenKind::Int
             }
             _ => TokenKind::Unknown,
@@ -556,8 +556,15 @@ mod test {
         assert_eq!(tokens("a_b"), vec![(Ident, "a_b")]);
         assert_eq!(tokens("x_"), vec![(Ident, "x_")]);
         assert_eq!(tokens("a__1"), vec![(Ident, "a__1")]);
-        // An identifier cannot start with `_`.
-        assert_eq!(tokens("_a"), vec![(Unknown, "_"), (Ident, "a")]);
+        // An identifier can start with `_`, or be just underscores.
+        assert_eq!(tokens("_a"), vec![(Ident, "_a")]);
+        assert_eq!(tokens("_1"), vec![(Ident, "_1")]);
+        assert_eq!(tokens("_"), vec![(Ident, "_")]);
+        assert_eq!(tokens("__"), vec![(Ident, "__")]);
+        // A leading `_` does not make a keyword an identifier, and does not
+        // stop one from being a different identifier.
+        assert_eq!(tokens("_let"), vec![(Ident, "_let")]);
+        assert_eq!(kinds("let _x"), vec![Let, Ident]);
     }
 
     #[test]
@@ -569,8 +576,15 @@ mod test {
             tokens("1x2 + 3"),
             vec![(Int, "1x2"), (Plus, "+"), (Int, "3")]
         );
-        // `_` is not part of a number.
-        assert_eq!(tokens("1_0"), vec![(Int, "1"), (Unknown, "_"), (Int, "0")]);
+        // `_` belongs to the number too, so `1_000` is one (invalid) literal,
+        // not `1` followed by the identifier `_000`.
+        assert_eq!(tokens("1_000"), vec![(Int, "1_000")]);
+        assert_eq!(tokens("1_"), vec![(Int, "1_")]);
+        assert_eq!(tokens("1__a2"), vec![(Int, "1__a2")]);
+        assert_eq!(
+            tokens("1_0 + _1"),
+            vec![(Int, "1_0"), (Plus, "+"), (Ident, "_1")]
+        );
     }
 
     #[test]
@@ -600,7 +614,7 @@ mod test {
 
     #[test]
     fn unknown_chars() {
-        for c in ['$', '_', '.', '|', '&', '٣', '€', 'é'] {
+        for c in ['$', '.', '|', '&', '٣', '€', 'é'] {
             let src = c.to_string();
             assert_eq!(tokens(&src), vec![(Unknown, src.as_str())], "input: {c:?}");
         }
@@ -719,10 +733,13 @@ mod test {
                 match tok.kind {
                     Int => {
                         assert!(text.starts_with(|c: char| c.is_ascii_digit()));
-                        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric()), "{text:?}");
+                        assert!(
+                            text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                            "{text:?}"
+                        );
                     }
                     Ident => {
-                        assert!(text.starts_with(|c: char| c.is_ascii_alphabetic()));
+                        assert!(text.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
                         assert!(text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
                         let keywords = ["let", "def", "fun", "true", "false", "if", "else"];
                         assert!(!keywords.contains(&text), "{text:?}");

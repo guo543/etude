@@ -10,8 +10,10 @@
  *   ( a )             grouping
  *   (* ... *)         comment
  *
- * Status: describes the planned language. Today the implementation covers
- * integers, + - * /, and parentheses.
+ * Status: describes the planned language. Not implemented yet:
+ *   - `//` comments;
+ *   - global `let`, which is still undecided: only `def` is accepted at
+ *     the top level for now.
  *)
 
 
@@ -117,13 +119,14 @@ lambda      = "fun" "(" [ params ] ")" "=>" expr ;
 (* Blocks and statements                                                 *)
 (* ===================================================================== *)
 
-(* A block's value is its tail expression, or unit if there is none.
- * Each `let` is in scope for the rest of the block, so
- * `{ let x = e1; rest }` means `let x = e1 in { rest }`.
+(* A block's value is its tail expression, which is required: there is no
+ * implicit unit, so a block run only for its effects ends in an explicit
+ * `()`, as in `{ f(); () }`. Each `let` is in scope for the rest of the
+ * block, so `{ let x = e1; rest }` means `let x = e1 in { rest }`.
  *
  * Parsing note: after an expression, ";" makes it a statement and "}"
  * makes it the tail. *)
-block       = "{" { stmt } [ expr ] "}" ;
+block       = "{" { stmt } expr "}" ;
 
 (* Bindings are immutable; a later `let` with the same name shadows the
  * earlier one. `let` is not recursive: in `let x = x + 1;` the right-hand
@@ -141,8 +144,10 @@ if_expr     = "if" expr block [ "else" ( block | if_expr ) ] ;
 (* Lexical grammar                                                       *)
 (* ===================================================================== *)
 
-(* Whitespace and comments separate tokens and are otherwise ignored. *)
-whitespace  = " " | "\t" | "\n" | "\r" ;
+(* Whitespace and comments separate tokens and are otherwise ignored.
+ * Whitespace is ASCII only: space, tab, newline, carriage return and form
+ * feed. Other Unicode spaces, such as U+00A0, are not allowed. *)
+whitespace  = " " | "\t" | "\n" | "\r" | "\f" ;
 
 comment     = "//" { ? any character except newline ? } ;
 
@@ -152,7 +157,10 @@ IDENT       = ( letter | "_" ) { letter | digit | "_" } ;
 keyword     = "let" | "def" | "fun" | "if" | "else" | "true" | "false" ;
 
 (* Must fit in an i64; a larger literal is an error. Negative numbers are
- * unary minus applied to a literal. *)
+ * unary minus applied to a literal. Letters and `_` directly after the
+ * digits are part of the same token, so `123abc` and `1_000` are each one
+ * malformed literal (an error), not a number followed by an identifier.
+ * Leading zeros are allowed: `007` is 7. *)
 INT         = digit { digit } ;
 
 letter      = "a" | ... | "z" | "A" | ... | "Z" ;

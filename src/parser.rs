@@ -1156,6 +1156,32 @@ mod test {
     }
 
     #[test]
+    fn underscore_in_number_is_invalid() {
+        // No digit separators: the whole literal is reported, not just `1`.
+        assert!(matches!(
+            parse("1_000 + 2"),
+            Err(ParserError::InvalidInt {
+                kind: IntErrorKind::InvalidDigit,
+                span: Span { start: 0, end: 5 },
+            })
+        ));
+    }
+
+    #[test]
+    fn names_can_start_with_underscore() {
+        assert_eq!(ast("_x + _"), "(_x + _)");
+        assert_eq!(ast("fun(_a, _) => _a"), "FUN (_a, _) => _a");
+        assert_eq!(
+            ast("{ let _unused = 1; 2 }"),
+            "BLOCK: { LET: _unused = 1 ; 2 }"
+        );
+        assert_eq!(
+            parse_program("def _helper(_n) = _n;").unwrap().to_string(),
+            "AST:\nDEF _helper (_n) = _n\n"
+        );
+    }
+
+    #[test]
     fn expression_spans() {
         let src = "1 + x * 3";
         let expr = parse(src).unwrap();

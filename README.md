@@ -18,7 +18,7 @@ def main() = {
 };
 ```
 
-The planned language is described in [`grammar.ebnf`](grammar.ebnf).
+The planned language is described in [`docs/grammar.ebnf`](docs/grammar.ebnf).
 
 ## Usage
 
