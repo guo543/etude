@@ -7,6 +7,9 @@ use crate::span::Span;
 pub enum TokenKind {
     // Literals and names
     Int,
+    Str {
+        terminated: bool,
+    },
     Ident,
 
     // Keywords
@@ -65,6 +68,7 @@ impl fmt::Display for TokenKind {
         let text = match self {
             // Literals and names
             TokenKind::Int => "an integer",
+            TokenKind::Str { .. } => "a string",
             TokenKind::Ident => "an identifier",
             // Keywords
             TokenKind::Let => "`let`",
@@ -239,6 +243,30 @@ impl<'src> Lexer<'src> {
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
             '}' => TokenKind::RBrace,
+            '"' => {
+                let terminated = loop {
+                    match self.peek() {
+                        None | Some('\n') => break false, // leave the newline for skip_trivia
+                        Some('"') => {
+                            self.bump();
+                            break true;
+                        }
+                        Some('\\') => {
+                            self.bump();
+                            // Skip whatever is escaped, even `"` or `\`; the parser
+                            // decides whether it is a valid escape. Never a newline,
+                            // so an unterminated string still stops at the line end.
+                            if self.peek().is_some_and(|c| c != '\n') {
+                                self.bump();
+                            }
+                        }
+                        Some(_) => {
+                            self.bump();
+                        }
+                    }
+                };
+                TokenKind::Str { terminated }
+            }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 self.eat_while(|c| c.is_ascii_alphanumeric() || c == '_');
                 match &self.src[start..self.pos()] {
@@ -734,6 +762,106 @@ mod test {
         assert_eq!(lexer.next_token(), Token::new(Eof, src.len(), src.len()));
     }
 
+    const STR: TokenKind = Str { terminated: true };
+    const UNTERMINATED: TokenKind = Str { terminated: false };
+
+    #[test]
+    fn strings() {
+        assert_eq!(tokens(r#""abc""#), vec![(STR, r#""abc""#)]);
+        assert_eq!(tokens(r#""""#), vec![(STR, r#""""#)]);
+        assert_eq!(tokens(r#"" ""#), vec![(STR, r#"" ""#)]);
+        // The token is the raw source text; escapes are the parser's job.
+        assert_eq!(tokens(r#""a\nb""#), vec![(STR, r#""a\nb""#)]);
+    }
+
+    #[test]
+    fn strings_between_tokens() {
+        assert_eq!(
+            tokens(r#""" + 1"#),
+            vec![(STR, r#""""#), (Plus, "+"), (Int, "1")]
+        );
+        assert_eq!(
+            tokens(r#"f("a","b")"#),
+            vec![
+                (Ident, "f"),
+                (LParen, "("),
+                (STR, r#""a""#),
+                (Comma, ","),
+                (STR, r#""b""#),
+                (RParen, ")")
+            ]
+        );
+        assert_eq!(kinds(r#""a""b""#), vec![STR, STR]);
+        assert_eq!(kinds(r#"x"y"z"#), vec![Ident, STR, Ident]);
+    }
+
+    #[test]
+    fn escapes_do_not_end_the_string() {
+        // An escaped quote is content, not the closing quote.
+        assert_eq!(tokens(r#""a\"b""#), vec![(STR, r#""a\"b""#)]);
+        assert_eq!(tokens(r#""\"""#), vec![(STR, r#""\"""#)]);
+        // An escaped backslash does not escape the quote after it.
+        assert_eq!(tokens(r#""\\" x"#), vec![(STR, r#""\\""#), (Ident, "x")]);
+        assert_eq!(tokens(r#""\\\"""#), vec![(STR, r#""\\\"""#)]);
+        // Unknown escapes are still skipped as a pair; the parser rejects them.
+        assert_eq!(tokens(r#""\q" 1"#), vec![(STR, r#""\q""#), (Int, "1")]);
+    }
+
+    #[test]
+    fn unterminated_strings() {
+        assert_eq!(tokens(r#"""#), vec![(UNTERMINATED, r#"""#)]);
+        assert_eq!(tokens(r#""abc"#), vec![(UNTERMINATED, r#""abc"#)]);
+        // The closing quote is escaped, so the string never ends.
+        assert_eq!(tokens(r#""\""#), vec![(UNTERMINATED, r#""\""#)]);
+        assert_eq!(tokens(r#""\"#), vec![(UNTERMINATED, r#""\"#)]);
+    }
+
+    #[test]
+    fn strings_stop_at_newline() {
+        // No raw newlines in strings: a missing quote ends the string at the
+        // line end instead of swallowing the rest of the file.
+        assert_eq!(
+            tokens("\"abc\nx = 1;"),
+            vec![
+                (UNTERMINATED, "\"abc"),
+                (Ident, "x"),
+                (Eq, "="),
+                (Int, "1"),
+                (Semicolon, ";")
+            ]
+        );
+        assert_eq!(tokens("\"\n1"), vec![(UNTERMINATED, "\""), (Int, "1")]);
+        assert_eq!(
+            tokens("\"ab\r\n1"),
+            vec![(UNTERMINATED, "\"ab\r"), (Int, "1")]
+        );
+        // A backslash cannot escape the newline either.
+        assert_eq!(
+            tokens("\"a\\\n1"),
+            vec![(UNTERMINATED, "\"a\\"), (Int, "1")]
+        );
+    }
+
+    #[test]
+    fn strings_and_comments() {
+        // `//` inside a string is content, not a comment.
+        assert_eq!(
+            tokens(r#""http://x" 1"#),
+            vec![(STR, r#""http://x""#), (Int, "1")]
+        );
+        // A quote inside a comment does not start a string.
+        assert_eq!(kinds("// say \"hi\n1"), vec![Int]);
+        assert_eq!(kinds("\"a\" // \"b\""), vec![STR]);
+    }
+
+    #[test]
+    fn string_spans_are_byte_offsets() {
+        // `é` is two bytes and `€` three.
+        assert_eq!(spans(r#""é€" 1"#), vec![(0, 7), (8, 9)]);
+        assert_eq!(tokens(r#""日本""#), vec![(STR, r#""日本""#)]);
+        assert_eq!(spans("\"é\n1"), vec![(0, 3), (4, 5)]);
+    }
+
     #[test]
     fn many_comment_lines() {
         // Skipped in a loop: no recursion per comment.
@@ -755,6 +883,8 @@ mod test {
     fn token_kind_display() {
         let cases = [
             (Int, "an integer"),
+            (STR, "a string"),
+            (UNTERMINATED, "a string"),
             (Ident, "an identifier"),
             (Let, "`let`"),
             (Def, "`def`"),
@@ -796,9 +926,9 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 19] = [
+        const ALPHABET: [char; 21] = [
             'a', 'l', 'e', 't', '_', '1', '+', ';', '=', '>', '<', '!', '|', '&', ' ', 'é', '$',
-            '/', '\n',
+            '/', '\n', '"', '\\',
         ];
 
         let mut inputs = vec![String::new()];
@@ -822,8 +952,12 @@ mod test {
 
                 // Panics if the span is not on char boundaries.
                 let text = &src[span.start..span.end];
-                // Comments never end up inside a token.
-                assert!(!text.contains("//"), "comment in token {text:?} in {src:?}");
+                // No token spans lines, and comments never end up inside one
+                // (though a string may contain `//`).
+                assert!(!text.contains('\n'), "newline in token {text:?} in {src:?}");
+                if !matches!(tok.kind, Str { .. }) {
+                    assert!(!text.contains("//"), "comment in token {text:?} in {src:?}");
+                }
                 assert!(!text.trim().is_empty(), "whitespace-only token in {src:?}");
 
                 match tok.kind {
@@ -848,6 +982,20 @@ mod test {
                     Le => assert_eq!(text, "<="),
                     Ge => assert_eq!(text, ">="),
                     Slash => assert_eq!(text, "/"),
+                    Str { terminated: true } => {
+                        assert!(text.len() >= 2 && text.starts_with('"') && text.ends_with('"'));
+                        // The closing quote is not escaped: an even number of
+                        // backslashes come right before it.
+                        let body = &text[1..text.len() - 1];
+                        let trailing = body.len() - body.trim_end_matches('\\').len();
+                        assert!(trailing % 2 == 0, "escaped closing quote in {text:?}");
+                    }
+                    Str { terminated: false } => {
+                        assert!(text.starts_with('"'), "{text:?}");
+                        // It stopped at the end of the line or of the input.
+                        let next = src[span.end..].chars().next();
+                        assert!(matches!(next, None | Some('\n')), "{text:?} in {src:?}");
+                    }
                     OrOr => assert_eq!(text, "||"),
                     AndAnd => assert_eq!(text, "&&"),
                     _ => assert_eq!(text.chars().count(), 1, "{text:?}"),

@@ -316,6 +316,7 @@ impl<'src> Parser<'src> {
                 self.bump();
                 Ok(n)
             }
+            TokenKind::Str { terminated: _ } => todo!(),
             TokenKind::True => {
                 let span = self.token.span;
                 self.bump();
