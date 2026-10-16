@@ -78,6 +78,7 @@ pub enum StmtKind {
 
 #[derive(Debug, Clone)]
 pub enum ExprKind {
+    Unit,
     Int(i64),
     Bool(bool),
     Var(String),
@@ -132,6 +133,13 @@ impl Stmt {
 }
 
 impl Expr {
+    pub fn unit(start: usize, end: usize) -> Self {
+        Expr {
+            kind: ExprKind::Unit,
+            span: Span { start, end },
+        }
+    }
+
     pub fn int(n: i64, start: usize, end: usize) -> Self {
         Expr {
             kind: ExprKind::Int(n),
@@ -227,6 +235,7 @@ impl fmt::Display for Stmt {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
+            ExprKind::Unit => write!(f, "()"),
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Var(s) => write!(f, "{s}"),
@@ -244,12 +253,12 @@ impl fmt::Display for Expr {
             ExprKind::Binary(op, lhs, rhs) => write!(f, "({lhs} {op} {rhs})"),
             ExprKind::If {
                 cond,
-                t_branch: then_branch,
-                f_branch: else_branch,
+                t_branch,
+                f_branch,
             } => {
-                write!(f, "(IF {cond} {then_branch}")?;
-                if let Some(else_branch) = else_branch {
-                    write!(f, " {else_branch}")?;
+                write!(f, "(IF {cond} {t_branch}")?;
+                if let Some(f_branch) = f_branch {
+                    write!(f, " {f_branch}")?;
                 }
                 write!(f, ")")
             }

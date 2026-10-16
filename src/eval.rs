@@ -171,7 +171,7 @@ struct Env<'ast> {
 }
 
 impl<'ast> Env<'ast> {
-    fn insert(&self, id: &'ast Ident, value: Value<'ast>) -> Self {
+    fn bind(&self, id: &'ast Ident, value: Value<'ast>) -> Self {
         Env {
             head: Some(Rc::new(Binding {
                 id,
@@ -243,11 +243,7 @@ impl<'ast> TreeEval<'ast> {
         }
     }
 
-    fn search<'env>(
-        &'env self,
-        name: &'ast str,
-        env: &'env Env<'ast>,
-    ) -> Option<&'env Value<'ast>> {
+    fn search<'env>(&'env self, name: &str, env: &'env Env<'ast>) -> Option<&'env Value<'ast>> {
         env.search(name).or_else(|| self.globals.get(name))
     }
 
@@ -268,7 +264,7 @@ impl<'ast> TreeEval<'ast> {
         match &stmt.kind {
             StmtKind::Let { id, init } => {
                 let v = self.eval_expr(init, &env)?;
-                let env = env.insert(id, v.clone());
+                let env = env.bind(id, v);
                 Ok(env)
             }
             StmtKind::ExprStmt(expr) => {
@@ -280,6 +276,7 @@ impl<'ast> TreeEval<'ast> {
 
     fn eval_expr(&self, expr: &'ast Expr, env: &Env<'ast>) -> Result<Value<'ast>, EvalError> {
         match &expr.kind {
+            ExprKind::Unit => Ok(Value::Unit),
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::Var(name) => {
@@ -305,7 +302,7 @@ impl<'ast> TreeEval<'ast> {
                 let mut closure_env = closure.env.clone();
                 for (param, arg) in closure.params.iter().zip(args.iter()) {
                     let v = self.eval_expr(arg, env)?;
-                    closure_env = closure_env.insert(param, v);
+                    closure_env = closure_env.bind(param, v);
                 }
 
                 self.eval_expr(closure.body, &closure_env)
@@ -314,26 +311,14 @@ impl<'ast> TreeEval<'ast> {
                 let e = self.eval_expr(operand, env)?;
                 match op {
                     UnOp::Neg => {
-                        let Value::Int(n) = e else {
-                            return Err(EvalError::TypeMismatch {
-                                expected: Type::Int,
-                                actual: e.ty(),
-                                span: operand.span,
-                            });
-                        };
+                        let n = expect_int(e, operand.span)?;
                         let Some(res) = n.checked_neg() else {
                             return Err(EvalError::IntegerOverflow(expr.span));
                         };
                         Ok(Value::Int(res))
                     }
                     UnOp::Not => {
-                        let Value::Bool(b) = e else {
-                            return Err(EvalError::TypeMismatch {
-                                expected: Type::Bool,
-                                actual: e.ty(),
-                                span: operand.span,
-                            });
-                        };
+                        let b = expect_bool(e, operand.span)?;
                         Ok(Value::Bool(!b))
                     }
                 }
@@ -632,7 +617,7 @@ mod test {
             span: Span { start: 0, end: 0 },
         };
         let params = vec![];
-        let captured = Env { head: None }.insert(&x, Value::Int(5));
+        let captured = Env { head: None }.bind(&x, Value::Int(5));
         let closure = Value::Fun(Rc::new(Closure {
             params: &params,
             body,
@@ -992,6 +977,30 @@ mod test {
         ));
         let (_, label) = error(src).diagnostic().label.unwrap();
         assert_eq!(label, "expected `()`, found `int`");
+    }
+
+    #[test]
+    fn unit_literal() {
+        assert_eq!(printed("def main() = ();"), "()");
+        assert_eq!(printed("def main() = () == ();"), "true");
+        // The literal and a missing `else` produce the same value.
+        assert_eq!(printed("def main() = () == if false { 1 };"), "true");
+        assert_eq!(
+            printed("def id(x) = x; def main() = { let u = (); id(u) };"),
+            "()"
+        );
+        let src = "def main() = () + 1;";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Unit, span }
+                if text(src, span) == "()"
+        ));
+        let src = "def main() = ()();";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Fun, actual: Type::Unit, span }
+                if text(src, span) == "()"
+        ));
     }
 
     #[test]

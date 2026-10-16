@@ -1,0 +1,7 @@
+def nothing() = ();
+
+def main() = {
+    let a = nothing();
+    let b = if false { 1 };
+    a == b && b == ()
+};

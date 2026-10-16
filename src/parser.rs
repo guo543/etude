@@ -340,11 +340,18 @@ impl<'src> Parser<'src> {
             TokenKind::LParen => {
                 let start = self.token.span.start;
                 self.bump();
-                let mut expr = self.parse_expr()?;
-                let end = self.expect(TokenKind::RParen)?.end;
-                // Widen span to include the parenthesis
-                expr.span = Span { start, end };
-                Ok(expr)
+                if self.peek_is(TokenKind::RParen) {
+                    // Unit literal
+                    let end = self.token.span.end;
+                    self.bump();
+                    Ok(Expr::unit(start, end))
+                } else {
+                    let mut expr = self.parse_expr()?;
+                    let end = self.expect(TokenKind::RParen)?.end;
+                    // Widen span to include the parenthesis
+                    expr.span = Span { start, end };
+                    Ok(expr)
+                }
             }
             TokenKind::LBrace => self.parse_block(),
             _ => Err(self.unexpected(Expected::Expression)),
@@ -853,6 +860,50 @@ mod test {
             Err(ParserError::UnexpectedToken {
                 expected: Expected::Token(TokenKind::Ident),
                 actual: TokenKind::True,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unit_literal() {
+        assert_eq!(ast("()"), "()");
+        assert_eq!(ast("( )"), "()");
+        assert!(matches!(parse("()").unwrap().kind, ExprKind::Unit));
+        // `(())` is unit in parentheses, not a nested unit type.
+        assert!(matches!(parse("(())").unwrap().kind, ExprKind::Unit));
+    }
+
+    #[test]
+    fn unit_in_expressions() {
+        assert_eq!(ast("f(())"), "f(())");
+        assert_eq!(ast("f((), 1)"), "f((), 1)");
+        assert_eq!(ast("{ let u = (); u }"), "BLOCK: { LET: u = () ; u }");
+        assert_eq!(ast("fun() => ()"), "FUN () => ()");
+        assert_eq!(ast("() == ()"), "(() == ())");
+        // A call with no arguments is still a call, not a call on unit.
+        assert_eq!(ast("f()"), "f()");
+    }
+
+    #[test]
+    fn unit_spans() {
+        let src = "f(1, ( ))";
+        let ExprKind::Call { args, .. } = &parse(src).unwrap().kind else {
+            panic!("expected a call");
+        };
+        assert_eq!(text(src, args[1].span), "( )");
+        // Parentheses around unit widen the span like any other expression.
+        let src = "(())";
+        assert_eq!(text(src, parse(src).unwrap().span), "(())");
+    }
+
+    #[test]
+    fn unclosed_unit() {
+        assert!(matches!(
+            parse("("),
+            Err(ParserError::UnexpectedToken {
+                expected: Expected::Expression,
+                actual: TokenKind::Eof,
                 ..
             })
         ));
