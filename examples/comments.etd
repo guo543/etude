@@ -1,0 +1,13 @@
+// Comments run from `//` to the end of the line.
+
+// A comment before a definition.
+def half(n) = n / 2; // division is still a single `/`
+
+def main() = {
+    let x = 10; // after a statement
+    // on a line of its own, inside a block
+    let y = half(
+        x // between an argument and the closing paren
+    );
+    x + y // the result: 15
+}; // and a last one with no newline at the end

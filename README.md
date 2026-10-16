@@ -45,7 +45,7 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   fails (bad characters become `Unknown`). Tokens: `+ - * /`,
   `== != < <= > >=`, `! && ||`, `= => , ; ( ) { }`, keywords
   `let def fun if else true false`, identifiers (ASCII letters, digits, `_`),
-  integers.
+  integers. Whitespace and `//` line comments are skipped.
 - **Parser** (`src/parser.rs`): rustc-style recursive descent that always
   holds the current token. A program is a list of `def name(params) = expr;`.
   Expressions: integers, `true`/`false`, variables, unary `-` and `!`,

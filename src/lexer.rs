@@ -153,6 +153,13 @@ impl<'src> Lexer<'src> {
         self.input.clone().next().map(|(_, c)| c)
     }
 
+    /// The character after the next one, without consuming either.
+    fn peek_second(&self) -> Option<char> {
+        let mut chars = self.input.clone();
+        chars.next();
+        chars.next().map(|(_, c)| c)
+    }
+
     fn bump(&mut self) -> Option<char> {
         self.input.next().map(|(_, c)| c)
     }
@@ -163,12 +170,26 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// Skip whitespace and `//` comments, in any order. A loop rather than
+    /// recursion, so any number of comment lines takes no extra stack.
+    fn skip_trivia(&mut self) {
+        loop {
+            self.eat_while(|c| c.is_ascii_whitespace());
+            if self.peek() == Some('/') && self.peek_second() == Some('/') {
+                self.eat_while(|c| c != '\n'); // the newline itself is whitespace
+            } else {
+                break;
+            }
+        }
+    }
+
     /// The next token, or `Eof` (with an empty span at the end of the
     /// input) once there are none left. Keeps returning `Eof` after that.
     /// Never fails: a character that cannot start a token comes back as
     /// `Unknown`. Integers are not range-checked here; the parser does that.
+    /// Whitespace and `//` comments between tokens are skipped.
     pub fn next_token(&mut self) -> Token {
-        self.eat_while(|c| c.is_ascii_whitespace());
+        self.skip_trivia();
 
         let start = self.pos();
         let Some(c) = self.bump() else {
@@ -649,6 +670,78 @@ mod test {
     }
 
     #[test]
+    fn comments_are_skipped() {
+        assert_eq!(kinds("// only a comment"), vec![]);
+        assert_eq!(kinds("//"), vec![]);
+        assert_eq!(kinds("// a\n// b\n\n   // c\n"), vec![]);
+        assert_eq!(tokens("1 // one"), vec![(Int, "1")]);
+        assert_eq!(
+            tokens("1 // one\n+ 2"),
+            vec![(Int, "1"), (Plus, "+"), (Int, "2")]
+        );
+        assert_eq!(
+            tokens("// first\nlet x = 1; // trailing\n// last"),
+            vec![
+                (Let, "let"),
+                (Ident, "x"),
+                (Eq, "="),
+                (Int, "1"),
+                (Semicolon, ";")
+            ]
+        );
+    }
+
+    #[test]
+    fn comment_ends_at_newline() {
+        // `\r\n` endings: the `\r` is inside the comment, `\n` ends it.
+        assert_eq!(tokens("1 // c\r\n2"), vec![(Int, "1"), (Int, "2")]);
+        // Anything up to the newline is ignored, even `//` again or code.
+        assert_eq!(kinds("// x // y + 1\nz"), vec![Ident]);
+        assert_eq!(kinds("///"), vec![]);
+        assert_eq!(kinds("//// banner ////\n1"), vec![Int]);
+    }
+
+    #[test]
+    fn comments_may_contain_anything() {
+        assert_eq!(kinds("// é € 日本 $ \u{a0}\n1"), vec![Int]);
+        // Spans after a non-ASCII comment are still byte offsets.
+        assert_eq!(spans("// é\nfoo"), vec![(6, 9)]);
+    }
+
+    #[test]
+    fn slash_is_still_division() {
+        assert_eq!(kinds("a / b"), vec![Ident, Slash, Ident]);
+        assert_eq!(kinds("a/b"), vec![Ident, Slash, Ident]);
+        assert_eq!(kinds("/"), vec![Slash]);
+        assert_eq!(kinds("1 / // halve\n2"), vec![Int, Slash, Int]);
+        // Two slashes always start a comment, even with no space before.
+        assert_eq!(kinds("a//b"), vec![Ident]);
+        assert_eq!(kinds("a/ /b"), vec![Ident, Slash, Slash, Ident]);
+    }
+
+    #[test]
+    fn spans_after_comments() {
+        assert_eq!(spans("// x\nfoo"), vec![(5, 8)]);
+        assert_eq!(spans("a // x\n  b"), vec![(0, 1), (9, 10)]);
+    }
+
+    #[test]
+    fn eof_after_trailing_comment() {
+        // `Eof` is at the very end of the input, after the comment.
+        let src = "1 // done";
+        let mut lexer = Lexer::new(src);
+        assert_eq!(lexer.next_token().kind, Int);
+        assert_eq!(lexer.next_token(), Token::new(Eof, src.len(), src.len()));
+    }
+
+    #[test]
+    fn many_comment_lines() {
+        // Skipped in a loop: no recursion per comment.
+        let src = "// line\n".repeat(100_000) + "1";
+        assert_eq!(kinds(&src), vec![Int]);
+    }
+
+    #[test]
     fn next_token_returns_eof_at_end() {
         let mut lexer = Lexer::new("1  ");
         assert_eq!(lexer.next_token().kind, Int);
@@ -703,8 +796,9 @@ mod test {
     /// check invariants that must hold for any input.
     #[test]
     fn invariants_on_all_short_inputs() {
-        const ALPHABET: [char; 17] = [
+        const ALPHABET: [char; 19] = [
             'a', 'l', 'e', 't', '_', '1', '+', ';', '=', '>', '<', '!', '|', '&', ' ', 'é', '$',
+            '/', '\n',
         ];
 
         let mut inputs = vec![String::new()];
@@ -728,6 +822,8 @@ mod test {
 
                 // Panics if the span is not on char boundaries.
                 let text = &src[span.start..span.end];
+                // Comments never end up inside a token.
+                assert!(!text.contains("//"), "comment in token {text:?} in {src:?}");
                 assert!(!text.trim().is_empty(), "whitespace-only token in {src:?}");
 
                 match tok.kind {
@@ -751,6 +847,7 @@ mod test {
                     Ne => assert_eq!(text, "!="),
                     Le => assert_eq!(text, "<="),
                     Ge => assert_eq!(text, ">="),
+                    Slash => assert_eq!(text, "/"),
                     OrOr => assert_eq!(text, "||"),
                     AndAnd => assert_eq!(text, "&&"),
                     _ => assert_eq!(text.chars().count(), 1, "{text:?}"),
