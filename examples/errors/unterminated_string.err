@@ -1,0 +1,7 @@
+Error: unterminated string literal
+   ╭─[ examples/errors/unterminated_string.etd:2:13 ]
+   │
+ 2 │     let s = "hello;
+   │             ───┬───
+   │                ╰───── missing the terminating `"`
+───╯

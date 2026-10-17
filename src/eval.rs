@@ -24,6 +24,7 @@ pub enum Type {
     Int,
     Bool,
     Fun,
+    Str,
 }
 
 /// The type's name, as it will appear in signatures and type errors.
@@ -34,6 +35,7 @@ impl fmt::Display for Type {
             Type::Int => write!(f, "int"),
             Type::Fun => write!(f, "fun"),
             Type::Bool => write!(f, "bool"),
+            Type::Str => write!(f, "string"),
         }
     }
 }
@@ -147,6 +149,7 @@ pub enum Value<'ast> {
     Unit,
     Int(i64),
     Bool(bool),
+    Str(Rc<str>),
     Fun(Rc<Closure<'ast>>),
 }
 
@@ -157,6 +160,7 @@ impl Value<'_> {
             Value::Int(_) => Type::Int,
             Value::Fun { .. } => Type::Fun,
             Value::Bool(_) => Type::Bool,
+            Value::Str(_) => Type::Str,
         }
     }
 }
@@ -167,6 +171,7 @@ impl fmt::Display for Value<'_> {
             Value::Unit => write!(f, "()"),
             Value::Int(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
+            Value::Str(s) => write!(f, "{s:?}"),
             Value::Fun(closure) => {
                 write!(f, "FUN (")?;
                 for (i, param) in closure.params.iter().enumerate() {
@@ -319,6 +324,7 @@ impl<'ast> TreeEval<'ast> {
             ExprKind::Unit => Ok(Value::Unit),
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+            ExprKind::Str(s) => Ok(Value::Str(s.clone())),
             ExprKind::Var(name) => {
                 self.search(name, env)
                     .cloned()
@@ -427,6 +433,7 @@ impl<'ast> TreeEval<'ast> {
                         let equal = match (&lv, &rv) {
                             (Value::Int(l), Value::Int(r)) => l == r,
                             (Value::Bool(l), Value::Bool(r)) => l == r,
+                            (Value::Str(l), Value::Str(r)) => l == r,
                             (Value::Unit, Value::Unit) => true,
                             (Value::Fun(_), _) => {
                                 return Err(EvalError::NotComparable {
@@ -1165,5 +1172,87 @@ mod test {
                    def odd(n) = if n == 0 { false } else { even(n - 1) };
                    def main() = even(10) && odd(7) && !even(3);";
         assert_eq!(printed(src), "true");
+    }
+
+    #[test]
+    fn strings_are_values() {
+        assert_eq!(printed(r#"def main() = "hi";"#), r#""hi""#);
+        assert_eq!(printed(r#"def main() = "";"#), r#""""#);
+        let ast = Parser::new(Lexer::new(r#"def main() = "hi";"#))
+            .parse()
+            .unwrap();
+        assert_eq!(eval(&ast).unwrap().ty(), Type::Str);
+    }
+
+    #[test]
+    fn string_results_are_displayed_escaped() {
+        assert_eq!(printed(r#"def main() = "a\tb\nc";"#), r#""a\tb\nc""#);
+        assert_eq!(printed(r#"def main() = "say \"hi\"";"#), r#""say \"hi\"""#);
+        assert_eq!(printed(r#"def main() = "\\";"#), r#""\\""#);
+    }
+
+    #[test]
+    fn strings_flow_through_bindings_calls_and_closures() {
+        assert_eq!(printed(r#"def main() = { let s = "x"; s };"#), r#""x""#);
+        assert_eq!(printed(r#"def id(x) = x; def main() = id("y");"#), r#""y""#);
+        let src = r#"def greet(name) = fun() => name; def main() = greet("z")();"#;
+        assert_eq!(printed(src), r#""z""#);
+    }
+
+    #[test]
+    fn string_equality() {
+        for (src, expected) in [
+            (r#""a" == "a""#, "true"),
+            (r#""a" == "b""#, "false"),
+            (r#""a" != "b""#, "true"),
+            (r#""" == """#, "true"),
+            (r#""é" == "é""#, "true"),
+            // Escapes are compared after they are replaced.
+            (r#""\t" == "	""#, "true"),
+            (r#"{ let s = "x"; s == s }"#, "true"),
+        ] {
+            assert_eq!(printed(&format!("def main() = {src};")), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn strings_are_not_numbers() {
+        // No concatenation or ordering on strings (yet).
+        let src = r#"def main() = "a" + "b";"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Str, span }
+                if text(src, span) == r#""a""#
+        ));
+        let src = r#"def main() = "a" < "b";"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch {
+                expected: Type::Int,
+                actual: Type::Str,
+                ..
+            }
+        ));
+        let src = r#"def main() = -"a";"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch {
+                expected: Type::Int,
+                actual: Type::Str,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn strings_compare_only_with_strings() {
+        let src = r#"def main() = "x" == 1;"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Str, actual: Type::Int, span }
+                if text(src, span) == "1"
+        ));
+        let (_, label) = error(src).diagnostic().label.unwrap();
+        assert_eq!(label, "expected `string`, found `int`");
     }
 }

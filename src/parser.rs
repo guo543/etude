@@ -42,6 +42,15 @@ pub enum ParserError {
     ChainedComparison {
         span: Span,
     },
+    StringNotTerminated(Span),
+    /// A `\` in a string followed by something that is not a valid escape.
+    /// `escape` is that character; `None` for a `\` at the very end, which
+    /// the lexer never produces. The span covers the backslash and the
+    /// character.
+    InvalidEscape {
+        escape: Option<char>,
+        span: Span,
+    },
 }
 
 impl ParserError {
@@ -51,6 +60,8 @@ impl ParserError {
             | ParserError::InvalidInt { span, .. }
             | ParserError::UnexpectedToken { span, .. } => *span,
             ParserError::ChainedComparison { span } => *span,
+            ParserError::StringNotTerminated(span) => *span,
+            ParserError::InvalidEscape { span, .. } => *span,
         }
     }
 }
@@ -71,6 +82,13 @@ impl fmt::Display for ParserError {
             ParserError::ChainedComparison { .. } => {
                 write!(f, "comparison operators cannot be chained")
             }
+            ParserError::StringNotTerminated(_) => write!(f, "unterminated string literal"),
+            ParserError::InvalidEscape {
+                escape: Some(c), ..
+            } => write!(f, "unknown escape `\\{}`", c.escape_debug()),
+            ParserError::InvalidEscape { escape: None, .. } => {
+                write!(f, "incomplete escape sequence")
+            }
         }
     }
 }
@@ -90,6 +108,8 @@ impl ParserError {
                 format!("expected {expected}")
             }
             ParserError::ChainedComparison { .. } => "cannot follow another comparison".to_owned(),
+            ParserError::StringNotTerminated(_) => "missing the terminating `\"`".to_owned(),
+            ParserError::InvalidEscape { .. } => "not a valid escape".to_owned(),
         };
         let diagnostic = Diagnostic::new(self.to_string(), self.span(), label);
         match self {
@@ -100,6 +120,10 @@ impl ParserError {
             ParserError::ChainedComparison { .. } => {
                 diagnostic.with_note("use `&&` to combine comparisons, e.g. `a < b && b < c`")
             }
+            ParserError::InvalidEscape { .. } => diagnostic.with_note(
+                "valid escapes are `\\n` `\\r` `\\t` `\\\\` `\\\"` `\\0`; \
+                 write `\\\\` for a backslash",
+            ),
             _ => diagnostic,
         }
     }
@@ -112,6 +136,46 @@ enum Assoc {
     Left,
     /// `a < b < c` is an error.
     None,
+}
+
+fn unescape(text: &str, offset: usize) -> Result<String, ParserError> {
+    let mut chars = text.char_indices();
+    let mut res = String::new();
+    while let Some((i, c)) = chars.next() {
+        let next_c = if c == '\\' {
+            let peek = chars.next();
+            match peek {
+                Some((j, c)) => match c {
+                    'n' => Ok('\n'),
+                    'r' => Ok('\r'),
+                    't' => Ok('\t'),
+                    '\\' => Ok('\\'),
+                    '"' => Ok('"'),
+                    '0' => Ok('\0'),
+                    _ => Err(ParserError::InvalidEscape {
+                        escape: Some(c),
+                        span: Span {
+                            start: offset + i,
+                            end: offset + j + c.len_utf8(),
+                        },
+                    }),
+                },
+                // Not produced by the lexer, which always treats `\"` as an
+                // escaped quote, so a terminated string never ends in `\`.
+                None => Err(ParserError::InvalidEscape {
+                    escape: None,
+                    span: Span {
+                        start: offset + i,
+                        end: offset + i + c.len_utf8(),
+                    },
+                }),
+            }
+        } else {
+            Ok(c)
+        };
+        res.push(next_c?);
+    }
+    Ok(res)
 }
 
 /// A recursive-descent parser in the style of rustc's: it always holds the
@@ -306,17 +370,24 @@ impl<'src> Parser<'src> {
             TokenKind::Int => {
                 let span = self.token.span;
                 let text = self.text(span);
-                let n = text
-                    .parse::<i64>()
+                self.bump();
+                text.parse::<i64>()
                     .map(|n| Expr::int(n, span.start, span.end))
                     .map_err(|e| ParserError::InvalidInt {
                         kind: *e.kind(),
                         span,
-                    })?;
-                self.bump();
-                Ok(n)
+                    })
             }
-            TokenKind::Str { terminated: _ } => todo!(),
+            TokenKind::Str { terminated } => {
+                let span = self.token.span;
+                if terminated {
+                    let text = self.text(span);
+                    self.bump();
+                    unescape(&text[1..text.len() - 1], span.start + 1).map(|s| Expr::str(s, span))
+                } else {
+                    Err(ParserError::StringNotTerminated(span))
+                }
+            }
             TokenKind::True => {
                 let span = self.token.span;
                 self.bump();
@@ -815,6 +886,131 @@ mod test {
                 "input: {src:?}, got: {err:?}"
             );
         }
+    }
+
+    /// The text of a string literal after parsing, i.e. with escapes
+    /// replaced by the characters they stand for.
+    fn string_value(src: &str) -> String {
+        match parse(src).unwrap().kind {
+            ExprKind::Str(s) => s.to_string(),
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_literals() {
+        assert_eq!(string_value(r#""hello""#), "hello");
+        assert_eq!(string_value(r#""""#), "");
+        assert_eq!(string_value(r#""two words""#), "two words");
+        assert_eq!(string_value(r#""é 日本 😀""#), "é 日本 😀");
+        // Displayed with quotes and escapes, e.g. by `--ast`.
+        assert_eq!(ast(r#""hi""#), r#""hi""#);
+        assert_eq!(ast(r#""a\nb""#), r#""a\nb""#);
+    }
+
+    #[test]
+    fn string_escapes() {
+        for (src, expected) in [
+            (r#""\n""#, "\n"),
+            (r#""\r""#, "\r"),
+            (r#""\t""#, "\t"),
+            (r#""\\""#, "\\"),
+            (r#""\"""#, "\""),
+            (r#""\0""#, "\0"),
+            (r#""a\tb\nc""#, "a\tb\nc"),
+            (r#""say \"hi\"""#, "say \"hi\""),
+            // `\\` followed by `n` is a backslash and an `n`, not a newline.
+            (r#""\\n""#, "\\n"),
+        ] {
+            assert_eq!(string_value(src), expected, "input: {src}");
+        }
+    }
+
+    #[test]
+    fn string_spans() {
+        let src = r#"f("hi", "a\nb")"#;
+        let ExprKind::Call { args, .. } = &parse(src).unwrap().kind else {
+            panic!("expected a call");
+        };
+        // Spans include the quotes and are in source bytes, before escapes
+        // are replaced.
+        assert_eq!(text(src, args[0].span), r#""hi""#);
+        assert_eq!(text(src, args[1].span), r#""a\nb""#);
+    }
+
+    #[test]
+    fn strings_in_expressions() {
+        assert_eq!(ast(r#""a" == "b""#), r#"("a" == "b")"#);
+        assert_eq!(ast(r#"f("x", 1)"#), r#"f("x", 1)"#);
+        assert_eq!(
+            ast(r#"{ let s = "x"; s }"#),
+            r#"BLOCK: { LET: s = "x" ; s }"#
+        );
+    }
+
+    #[test]
+    fn unterminated_strings() {
+        for (src, covered) in [
+            (r#""abc"#, r#""abc"#),
+            (r#"f("abc"#, r#""abc"#),
+            // An escaped quote does not end the string.
+            (r#""abc\""#, r#""abc\""#),
+            // A string cannot span lines; the error stops at the line end.
+            ("\"abc\n1", "\"abc"),
+        ] {
+            let err = parse(src).unwrap_err();
+            let ParserError::StringNotTerminated(span) = err else {
+                panic!("input: {src:?}, got: {err:?}");
+            };
+            assert_eq!(text(src, span), covered, "input: {src:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_escapes() {
+        for (src, escape, covered) in [
+            (r#""\q""#, 'q', r"\q"),
+            (r#""ab\qcd""#, 'q', r"\q"),
+            // No octal, Unicode or other escapes (yet).
+            (r#""\1""#, '1', r"\1"),
+            (r#""\u{41}""#, 'u', r"\u"),
+            (r#""\x41""#, 'x', r"\x"),
+            // Non-ASCII escaped characters: the span ends on a char boundary.
+            (r#""é\é""#, 'é', r"\é"),
+            (r#""\😀""#, '😀', r"\😀"),
+        ] {
+            let err = parse(src).unwrap_err();
+            let ParserError::InvalidEscape {
+                escape: Some(c),
+                span,
+            } = err
+            else {
+                panic!("input: {src:?}, got: {err:?}");
+            };
+            assert_eq!(c, escape, "input: {src:?}");
+            assert_eq!(text(src, span), covered, "input: {src:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_escape_diagnostic() {
+        let diag = parse(r#""\q""#).unwrap_err().diagnostic();
+        assert_eq!(diag.message, r"unknown escape `\q`");
+        assert_eq!(diag.label.unwrap().1, "not a valid escape");
+        assert_eq!(
+            diag.notes,
+            [r#"valid escapes are `\n` `\r` `\t` `\\` `\"` `\0`; write `\\` for a backslash"#]
+        );
+        // Escaped characters are shown readably in the headline.
+        let diag = parse("\"\\\t\"").unwrap_err().diagnostic();
+        assert_eq!(diag.message, r"unknown escape `\\t`");
+    }
+
+    #[test]
+    fn unterminated_string_diagnostic() {
+        let diag = parse(r#""abc"#).unwrap_err().diagnostic();
+        assert_eq!(diag.message, "unterminated string literal");
+        assert_eq!(diag.label.unwrap().1, "missing the terminating `\"`");
     }
 
     #[test]

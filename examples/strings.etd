@@ -1,0 +1,6 @@
+def greeting(formal) = if formal { "Good day" } else { "hi\tthere" };
+
+def main() = {
+    let casual = greeting(false);
+    casual == "hi\tthere" && greeting(true) != casual
+};

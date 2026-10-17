@@ -3,6 +3,7 @@
  * Notation:
  *   rule = ... ;      definition
  *   "x"               literal token
+ *   'x'               literal token (used for `"` and `\`)
  *   a b               sequence
  *   a | b             alternative
  *   [ a ]             optional
@@ -72,7 +73,9 @@ or_expr     = and_expr { "||" and_expr } ;
 
 and_expr    = comparison { "&&" comparison } ;
 
-(* Non-associative: `a < b < c` is a syntax error. *)
+(* Non-associative: `a < b < c` is a syntax error.
+ * `==` and `!=` work on two integers, booleans, strings or units; functions
+ * cannot be compared. `<`, `<=`, `>`, `>=` work on integers only. *)
 comparison  = additive [ compare_op additive ] ;
 
 compare_op  = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
@@ -93,6 +96,7 @@ postfix     = atom { call_args } ;
 call_args   = "(" [ expr { "," expr } [ "," ] ] ")" ;
 
 atom        = INT
+            | STRING
             | "true"
             | "false"
             | IDENT
@@ -161,6 +165,22 @@ keyword     = "let" | "def" | "fun" | "if" | "else" | "true" | "false" ;
  * malformed literal (an error), not a number followed by an identifier.
  * Leading zeros are allowed: `007` is 7. *)
 INT         = digit { digit } ;
+
+(* Written between double quotes on a single line: a newline before the
+ * closing `"` is an error ("unterminated string literal"). Inside, `\`
+ * starts an escape:
+ *
+ *   \n  newline           \r  carriage return    \t  tab
+ *   \\  backslash         \"  double quote       \0  NUL
+ *
+ * Any other escape is an error, e.g. `\q`, `\1`, `\x41` or `\u{41}`; write
+ * `\\` for a literal backslash. Strings can be compared with `==` and `!=`;
+ * there is no concatenation or ordering yet. *)
+STRING      = '"' { string_char | escape } '"' ;
+
+string_char = ? any character except '"', '\' and newline ? ;
+
+escape      = '\' ( "n" | "r" | "t" | '\' | '"' | "0" ) ;
 
 letter      = "a" | ... | "z" | "A" | ... | "Z" ;
 

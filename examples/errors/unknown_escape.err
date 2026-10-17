@@ -1,0 +1,9 @@
+Error: unknown escape `\U`
+   ╭─[ examples/errors/unknown_escape.etd:2:19 ]
+   │
+ 2 │     let path = "C:\Users\me";
+   │                   ─┬
+   │                    ╰── not a valid escape
+   │
+   │ Note: valid escapes are `\n` `\r` `\t` `\\` `\"` `\0`; write `\\` for a backslash
+───╯

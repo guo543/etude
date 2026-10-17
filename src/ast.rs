@@ -1,5 +1,5 @@
 use crate::span::Span;
-use std::fmt;
+use std::{fmt, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
@@ -81,6 +81,7 @@ pub enum ExprKind {
     Unit,
     Int(i64),
     Bool(bool),
+    Str(Rc<str>),
     Var(String),
     Call {
         callee: Box<Expr>,
@@ -151,6 +152,13 @@ impl Expr {
         Expr {
             kind: ExprKind::Bool(b),
             span: Span { start, end },
+        }
+    }
+
+    pub fn str(s: String, span: Span) -> Self {
+        Expr {
+            kind: ExprKind::Str(Rc::from(s)),
+            span,
         }
     }
 
@@ -238,6 +246,7 @@ impl fmt::Display for Expr {
             ExprKind::Unit => write!(f, "()"),
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::Str(s) => write!(f, "{s:?}"),
             ExprKind::Var(s) => write!(f, "{s}"),
             ExprKind::Call { callee, args } => {
                 write!(f, "{}(", callee)?;
