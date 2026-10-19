@@ -259,7 +259,9 @@ impl<'src> Parser<'src> {
     }
 
     /// An error saying the current token is not what we wanted. Bad input
-    /// from the lexer is reported as such, since no grammar rule accepts it.
+    /// from the lexer (an unknown character or an unterminated string) is
+    /// reported as such wherever it appears, since no grammar rule accepts
+    /// it.
     fn unexpected(&self, expected: Expected) -> ParserError {
         let Token { kind, span } = self.token;
         match kind {
@@ -268,6 +270,7 @@ impl<'src> Parser<'src> {
                 ch: self.text(span).chars().next().unwrap_or_default(),
                 span,
             },
+            TokenKind::Str { terminated: false } => ParserError::StringNotTerminated(span),
             TokenKind::Eof => ParserError::UnexpectedToken {
                 expected,
                 actual: kind,
@@ -378,15 +381,13 @@ impl<'src> Parser<'src> {
                         span,
                     })
             }
-            TokenKind::Str { terminated } => {
+            // An unterminated string falls through to `unexpected`, which
+            // reports it as such.
+            TokenKind::Str { terminated: true } => {
                 let span = self.token.span;
-                if terminated {
-                    let text = self.text(span);
-                    self.bump();
-                    unescape(&text[1..text.len() - 1], span.start + 1).map(|s| Expr::str(s, span))
-                } else {
-                    Err(ParserError::StringNotTerminated(span))
-                }
+                let text = self.text(span);
+                self.bump();
+                unescape(&text[1..text.len() - 1], span.start + 1).map(|s| Expr::str(s, span))
             }
             TokenKind::True => {
                 let span = self.token.span;
@@ -1004,6 +1005,42 @@ mod test {
         // Escaped characters are shown readably in the headline.
         let diag = parse("\"\\\t\"").unwrap_err().diagnostic();
         assert_eq!(diag.message, r"unknown escape `\\t`");
+    }
+
+    #[test]
+    fn unterminated_strings_anywhere() {
+        // Wherever the parser rejects the token, the report is about the
+        // string, not "expected X, found a string".
+        for (src, covered) in [
+            // Where `,` or `)` is expected.
+            (r#"def main() = f(1 "abc"#, r#""abc"#),
+            // Where `;` is expected.
+            ("def main() = 1 \"abc\n", "\"abc"),
+            // Where `}` is expected.
+            ("def main() = { 1 \"x }", "\"x }"),
+            // Where an identifier is expected.
+            (r#"def "abc"#, r#""abc"#),
+            ("def main() = { let \"x = 1; 2 };", "\"x = 1; 2 };"),
+            (r#"def f(a, "b"#, r#""b"#),
+            // Where `def` is expected.
+            ("\"abc", "\"abc"),
+        ] {
+            let err = parse_program(src).unwrap_err();
+            let ParserError::StringNotTerminated(span) = err else {
+                panic!("input: {src:?}, got: {err:?}");
+            };
+            assert_eq!(text(src, span), covered, "input: {src:?}");
+        }
+        // A terminated string in the wrong place is still an ordinary
+        // unexpected token.
+        assert!(matches!(
+            parse_program(r#"def "f"() = 1;"#),
+            Err(ParserError::UnexpectedToken {
+                expected: Expected::Token(TokenKind::Ident),
+                actual: TokenKind::Str { terminated: true },
+                ..
+            })
+        ));
     }
 
     #[test]
