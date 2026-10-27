@@ -45,15 +45,18 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   fails (bad characters become `Unknown`). Tokens: `+ - * / %`,
   `== != < <= > >=`, `! && ||`, `= => , ; ( ) { }`, keywords
   `let def fun if else true false`, identifiers (ASCII letters, digits, `_`),
-  integers. Whitespace and `//` line comments are skipped.
+  integers and string literals. Whitespace and `//` line comments are
+  skipped.
 - **Parser** (`src/parser.rs`): rustc-style recursive descent that always
   holds the current token. A program is a list of `def name(params) = expr;`.
-  Expressions: integers, `true`/`false`, variables, unary `-` and `!`,
-  binary operators from a precedence table in the parser (`||` < `&&` <
-  comparisons < `+ -` < `* /`), calls `f(a)(b)` on any expression, lambdas
-  `fun(params) => body`, `if c { … } else if d { … } else { … }`, and blocks
-  `{ let x = e; e; tail }`. Every node has a span; errors at end of input
-  point right after the last token.
+  Expressions: integers, strings (escapes `\n \r \t \\ \" \0`),
+  `true`/`false`, unit `()`, variables, unary `-` and `!`, binary operators
+  from a precedence table in the parser (`||` < `&&` < comparisons < `+ -` <
+  `* / %`), calls `f(a)(b)` on any expression, lambdas `fun(params) => body`,
+  `if c { … } else if d { … } else { … }`, and blocks
+  `{ let x = e; e; tail }`. Parameter and argument lists allow a trailing
+  comma. Every node has a span; errors at end of input point right after the
+  last token.
 - **Evaluator** (`src/eval.rs`): a tree walker that borrows from the AST.
   Top-level `def`s live in a global table and are closures with an empty
   captured environment; locals live in an immutable linked environment, so
@@ -64,19 +67,23 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   joins two strings. `%` is the remainder, with the sign of the dividend as
   in Rust. `&&` and `||` short-circuit; `if` evaluates only the chosen
   branch, so recursion terminates. Integer overflow, division by zero, wrong
-  argument counts and type mismatches are runtime errors.
+  argument counts and type mismatches are runtime errors, and so is
+  recursion deeper than 10,000 calls; `stacker` grows the native stack so
+  deeply nested evaluation does not overflow it first.
 - **Errors** (`src/diagnostic.rs`): reported with ariadne. Each error's
   `Display` is the headline; `diagnostic()` adds the underlined location,
   label and notes.
 - **CLI** (`src/main.rs`, clap): `etude [--ast] [--color auto|always|never]
   <file>`.
-- **Tests:** 132 unit tests; 34 example programs (13 that run, including
-  factorial and fibonacci, and 21 that must fail with a specific report).
+- **Tests:** 191 unit tests; 45 example programs (18 that run, including
+  factorial, fibonacci and FizzBuzz, and 27 that must fail with a specific
+  report).
 
 ## Design decisions so far
 
 - **Blocks, not `let … in`.** `{ let x = e; …; tail }` is an expression whose
-  value is its tail; it means `let x = e in { … }`.
+  value is its tail; it means `let x = e in { … }`. The tail is required:
+  there is no implicit unit, so a block that ends in `;` is an error.
 - **`def` defines functions only,** always with a parameter list, and ends
   with `;`. `def f(a) = body;` means `f = fun(a) => body`.
 - **Lambdas:** `fun(params) => body`. `=` is for definitions, `=>` maps
@@ -96,8 +103,10 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
 - **Comparisons cannot be chained:** `a < b < c` and `a == b < c` are
   errors. `==`/`!=` share one precedence level with `<`, `<=`, `>`, `>=`, as
   in Rust and Swift.
-- **`&&` and `||` short-circuit.** `==` works on integers, booleans and unit;
-  functions cannot be compared.
+- **`&&` and `||` short-circuit.** `==` works on integers, booleans,
+  strings and unit; functions cannot be compared.
+- **Strings are UTF-8** with a fixed set of escapes; any other escape is an
+  error.
 - **Builtins are ordinary global functions** that cannot be redefined at
   the top level; a local `let` or parameter may shadow them.
 - **The lexer never fails;** bad input becomes a token that the parser
@@ -118,6 +127,11 @@ Each step ends with something that runs and is tested.
 - Lambdas and closures (`fun(params) => body`), currying, functions as values.
 - Booleans, comparisons, `!`/`&&`/`||` with short-circuiting, `if`/`else if`/
   `else` as expressions, unit; factorial, fibonacci and mutual recursion run.
+- Unit literal `()`, `//` comments, trailing commas, identifiers starting
+  with `_`.
+- Strings: literals with escapes, `==`, `concat`; `%`.
+- Builtins: `print`, `println`, `int_to_str`, `concat`.
+- Call-depth limit and stack growth with `stacker`.
 - Error reports with ariadne; clap CLI with `--ast` and `--color`.
 - End-to-end example tests with `BLESS=1`.
 
@@ -126,12 +140,11 @@ Each step ends with something that runs and is tested.
 - [ ] **Duplicate top-level names are an error:** "`f` is defined more than
       once". Today the last definition silently wins. Give `Diagnostic`
       secondary labels so the report can also point at the first definition.
-- [ ] **Call-depth limit** (now urgent, since recursion terminates and deep
-      recursion is realistic): `fact(100000)` overflows the Rust stack and
-      aborts. Count call depth in the evaluator and report "recursion too
-      deep" instead.
-- [ ] **`parse_comma_list`:** the parameter/argument loop exists three times
-      (`def` parameters, lambda parameters, call arguments).
+- [x] **Call-depth limit:** more than 10,000 nested calls is a "recursion
+      limit reached" error; `stacker` keeps the native stack from
+      overflowing first.
+- [x] **`parse_comma_list`:** one loop for `def` parameters, lambda
+      parameters and call arguments.
 - [ ] **Share `def` and lambda:** a `Lambda { params, body }` struct used by
       both `DeclKind::FunDecl { id, lambda }` and `ExprKind::Lambda`, since a
       `def` is a name bound to a lambda.
@@ -143,12 +156,14 @@ See "Done" above.
 ## 3. Unit and `print`
 
 - [x] `Value::Unit` and `Type::Unit`; `if` without `else` is unit.
-- [ ] `()` literal: `(` directly followed by `)` in `parse_atom`.
+- [x] `()` literal: `(` directly followed by `)` in `parse_atom`.
 - [x] Built-in functions (`Value::Builtin`): `print(s)` and `println(s)`,
       returning unit, `int_to_str(n)` and `concat(a, b)`.
-- [ ] Optional block tail (a missing tail means unit).
+- [x] ~~Optional block tail~~: decided against; a block needs a tail.
 
 ## 4. Global `let`
+
+Undecided: maybe no global `let` at all, or only constants.
 
 - [ ] Top-level `let`, evaluated eagerly and in order before `main`.
 - [ ] Reading a global before it is initialized is a runtime error.
@@ -157,8 +172,10 @@ See "Done" above.
 
 ## 5. Strings
 
-- [ ] String literals with escapes, `Value::Str`, a `string` type, and
-      concatenation.
+- [x] String literals with escapes, `Value::Str`, a `string` type, and
+      concatenation (the `concat` builtin).
+- [ ] A `++` operator; ordering; length and slicing without integer
+      indexing (UTF-8), once there is an `option` type.
 
 ## 6. Algebraic data types and `match` (checked at run time)
 
@@ -226,7 +243,8 @@ A separate pass between parsing and running.
   different from one in a block. Decide together with global `let`.
 - **Statements ending in `}` without `;`** (`if c { print(x) }`): allow when
   the statement is a block or an `if`? A following line starting with `-` or
-  `(` would continue the expression. Decide once `print` exists.
+  `(` would continue the expression. Today the `;` is required:
+  `{ if c { println(x) } 1 }` is a syntax error.
 
 ## Later
 
