@@ -16,6 +16,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// The remainder of `Div`, with the sign of the dividend, as in Rust.
+    Rem,
 
     // Comparison: two operands to a boolean.
     Eq,
@@ -49,6 +51,7 @@ impl fmt::Display for BinOp {
             BinOp::Sub => "-",
             BinOp::Mul => "*",
             BinOp::Div => "/",
+            BinOp::Rem => "%",
             // Comparison
             BinOp::Eq => "==",
             BinOp::Ne => "!=",

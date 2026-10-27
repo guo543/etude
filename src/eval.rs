@@ -169,17 +169,24 @@ pub enum Builtin {
     Print,
     Println,
     IntToStr,
+    Concat,
 }
 
 impl Builtin {
     /// Every builtin, for pre-filling the globals.
-    const ALL: [Builtin; 3] = [Builtin::Print, Builtin::Println, Builtin::IntToStr];
+    const ALL: [Builtin; 4] = [
+        Builtin::Print,
+        Builtin::Println,
+        Builtin::IntToStr,
+        Builtin::Concat,
+    ];
 
     fn name(self) -> &'static str {
         match self {
             Builtin::Print => "print",
             Builtin::Println => "println",
             Builtin::IntToStr => "int_to_str",
+            Builtin::Concat => "concat",
         }
     }
 
@@ -189,6 +196,7 @@ impl Builtin {
         match self {
             Builtin::Print | Builtin::Println => &[Type::Str],
             Builtin::IntToStr => &[Type::Int],
+            Builtin::Concat => &[Type::Str, Type::Str],
         }
     }
 }
@@ -451,17 +459,18 @@ impl<'ast, 'out> TreeEval<'ast, 'out> {
 
                 match op {
                     BinOp::And | BinOp::Or => unreachable!("handled above"),
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                         let l = expect_int(lv, lhs.span)?;
                         let r = expect_int(rv, rhs.span)?;
                         let result = match op {
                             BinOp::Add => l.checked_add(r),
                             BinOp::Sub => l.checked_sub(r),
                             BinOp::Mul => l.checked_mul(r),
-                            BinOp::Div if r == 0 => {
+                            BinOp::Div | BinOp::Rem if r == 0 => {
                                 return Err(EvalError::DivisionByZero(rhs.span));
                             }
                             BinOp::Div => l.checked_div(r),
+                            BinOp::Rem => l.checked_rem(r),
                             _ => unreachable!(),
                         };
                         result
@@ -633,6 +642,9 @@ impl<'ast, 'out> TreeEval<'ast, 'out> {
                 Ok(Value::Unit)
             }
             (Builtin::IntToStr, [Value::Int(n)]) => Ok(Value::Str(n.to_string().into())),
+            (Builtin::Concat, [Value::Str(a), Value::Str(b)]) => {
+                Ok(Value::Str(format!("{a}{b}").into()))
+            }
             _ => unreachable!("the arguments were checked against `params`"),
         }
     }
@@ -1367,7 +1379,7 @@ mod test {
 
     #[test]
     fn strings_are_not_numbers() {
-        // No concatenation or ordering on strings (yet).
+        // `+` and the orderings are for integers; `concat` joins strings.
         let src = r#"def main() = "a" + "b";"#;
         assert!(matches!(
             error(src),
@@ -1549,6 +1561,68 @@ mod test {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Builtin::ALL.len());
+    }
+
+    #[test]
+    fn remainder_has_the_sign_of_the_dividend() {
+        assert_eq!(printed("def main() = 7 % 3;"), "1");
+        assert_eq!(printed("def main() = -7 % 3;"), "-1");
+        assert_eq!(printed("def main() = 7 % -3;"), "1");
+        assert_eq!(printed("def main() = 6 % 3;"), "0");
+        // `%` binds like `*` and `/`: (2 * 7) % 4, then + 1.
+        assert_eq!(printed("def main() = 1 + 2 * 7 % 4;"), "3");
+        // a == (a / b) * b + a % b
+        assert_eq!(printed("def main() = -7 / 2 * 2 + -7 % 2;"), "-7");
+    }
+
+    #[test]
+    fn remainder_by_zero_and_overflow() {
+        let src = "def main() = 5 % (1 - 1);";
+        assert!(matches!(
+            error(src),
+            EvalError::DivisionByZero(span) if text(src, span) == "(1 - 1)"
+        ));
+        // The quotient i64::MIN / -1 does not fit, so neither does `%`.
+        let src = "def main() = (-9223372036854775807 - 1) % -1;";
+        assert!(matches!(
+            error(src),
+            EvalError::IntegerOverflow(span) if text(src, span) == "(-9223372036854775807 - 1) % -1"
+        ));
+    }
+
+    #[test]
+    fn concat_joins_two_strings() {
+        assert_eq!(
+            run(r#"def main() = concat("foo", "bar");"#).0,
+            r#""foobar""#
+        );
+        assert_eq!(run(r#"def main() = concat("", "");"#).0, r#""""#);
+        let src = r#"def main() = concat("é", concat("\n", "日本"));"#;
+        assert_eq!(run(src).0, r#""é\n日本""#);
+        let src = r#"def main() = println(concat("n = ", int_to_str(3)));"#;
+        assert_eq!(run(src).1, "n = 3\n");
+        // The result is an ordinary string.
+        let src = r#"def main() = concat("a", "b") == "ab";"#;
+        assert_eq!(run(src).0, "true");
+    }
+
+    #[test]
+    fn concat_checks_both_arguments() {
+        let src = r#"def main() = concat("a", 1);"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Str, actual: Type::Int, span }
+                if text(src, span) == "1"
+        ));
+        let src = r#"def main() = concat("a");"#;
+        assert!(matches!(
+            error(src),
+            EvalError::ArgumentCountMismatch {
+                expected: 2,
+                actual: 1,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+Error: division by zero
+   ╭─[ examples/errors/remainder_by_zero.etd:1:19 ]
+   │
+ 1 │ def main() = 10 % (5 - 5);
+   │                   ───┬───
+   │                      ╰───── this is zero
+───╯

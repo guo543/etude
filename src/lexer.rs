@@ -26,6 +26,7 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Percent,
 
     // Comparison operators
     EqEq,
@@ -83,6 +84,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Minus => "`-`",
             TokenKind::Star => "`*`",
             TokenKind::Slash => "`/`",
+            TokenKind::Percent => "`%`",
             // Comparison operators
             TokenKind::EqEq => "`==`",
             TokenKind::Ne => "`!=`",
@@ -205,6 +207,7 @@ impl<'src> Lexer<'src> {
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
+            '%' => TokenKind::Percent,
             '=' if let Some('=') = self.peek() => {
                 self.bump();
                 TokenKind::EqEq
@@ -334,6 +337,7 @@ mod test {
             ("-", Minus),
             ("*", Star),
             ("/", Slash),
+            ("%", Percent),
             ("=", Eq),
             ("=>", FatArrow),
             ("==", EqEq),
@@ -399,6 +403,7 @@ mod test {
         assert_eq!(kinds("((1))"), vec![LParen, LParen, Int, RParen, RParen]);
         assert_eq!(tokens("-5"), vec![(Minus, "-"), (Int, "5")]);
         assert_eq!(kinds("2*-3/x"), vec![Int, Star, Minus, Int, Slash, Ident]);
+        assert_eq!(kinds("n%2"), vec![Ident, Percent, Int]);
     }
 
     #[test]
@@ -908,6 +913,7 @@ mod test {
             (Minus, "`-`"),
             (Star, "`*`"),
             (Slash, "`/`"),
+            (Percent, "`%`"),
             (Comma, "`,`"),
             (Semicolon, "`;`"),
             (LParen, "`(`"),

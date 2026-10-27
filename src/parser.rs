@@ -233,6 +233,7 @@ impl<'src> Parser<'src> {
             TokenKind::Minus => Some((BinOp::Sub, 4, Assoc::Left)),
             TokenKind::Star => Some((BinOp::Mul, 5, Assoc::Left)),
             TokenKind::Slash => Some((BinOp::Div, 5, Assoc::Left)),
+            TokenKind::Percent => Some((BinOp::Rem, 5, Assoc::Left)),
 
             _ => None,
         }
@@ -553,6 +554,9 @@ mod test {
         assert_eq!(ast("1 * 2 + 3"), "((1 * 2) + 3)");
         assert_eq!(ast("1 - 2 - 3"), "((1 - 2) - 3)");
         assert_eq!(ast("8 / 4 / 2"), "((8 / 4) / 2)");
+        assert_eq!(ast("1 + 7 % 3"), "(1 + (7 % 3))");
+        assert_eq!(ast("7 % 3 * 2"), "((7 % 3) * 2)");
+        assert_eq!(ast("7 * 3 % 2"), "((7 * 3) % 2)");
         assert_eq!(ast("(1 - 2) * 3"), "((1 - 2) * 3)");
         assert_eq!(ast("((7))"), "7");
     }

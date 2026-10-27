@@ -42,7 +42,7 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
 ## Where things stand
 
 - **Lexer** (`src/lexer.rs`): tokens carry only a kind and a span; it never
-  fails (bad characters become `Unknown`). Tokens: `+ - * /`,
+  fails (bad characters become `Unknown`). Tokens: `+ - * / %`,
   `== != < <= > >=`, `! && ||`, `= => , ; ( ) { }`, keywords
   `let def fun if else true false`, identifiers (ASCII letters, digits, `_`),
   integers. Whitespace and `//` line comments are skipped.
@@ -60,8 +60,9 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   closures capture by sharing it. Values: integers, booleans, unit `()`,
   strings, functions and builtins. Builtins are an enum dispatched by
   `match`: `print(s)` and `println(s)` write a string to stdout (the latter
-  with a newline) and `int_to_str(n)` formats an integer. `&&` and `||`
-  short-circuit; `if` evaluates only the chosen
+  with a newline), `int_to_str(n)` formats an integer and `concat(a, b)`
+  joins two strings. `%` is the remainder, with the sign of the dividend as
+  in Rust. `&&` and `||` short-circuit; `if` evaluates only the chosen
   branch, so recursion terminates. Integer overflow, division by zero, wrong
   argument counts and type mismatches are runtime errors.
 - **Errors** (`src/diagnostic.rs`): reported with ariadne. Each error's
@@ -144,7 +145,7 @@ See "Done" above.
 - [x] `Value::Unit` and `Type::Unit`; `if` without `else` is unit.
 - [ ] `()` literal: `(` directly followed by `)` in `parse_atom`.
 - [x] Built-in functions (`Value::Builtin`): `print(s)` and `println(s)`,
-      returning unit, and `int_to_str(n)`.
+      returning unit, `int_to_str(n)` and `concat(a, b)`.
 - [ ] Optional block tail (a missing tail means unit).
 
 ## 4. Global `let`

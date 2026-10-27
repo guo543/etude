@@ -1,0 +1,17 @@
+// `%` is the remainder; `concat` joins two strings.
+def label(i) = if i % 15 == 0 {
+    "FizzBuzz"
+} else if i % 3 == 0 {
+    "Fizz"
+} else if i % 5 == 0 {
+    "Buzz"
+} else {
+    int_to_str(i)
+};
+
+def fizzbuzz(i, n) = if i <= n {
+    println(concat(concat(int_to_str(i), ": "), label(i)));
+    fizzbuzz(i + 1, n)
+};
+
+def main() = fizzbuzz(1, 15);

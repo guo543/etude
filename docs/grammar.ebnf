@@ -32,9 +32,9 @@
  *     `def f() = ...` delays the effects until `f()` is called.
  *
  * Visibility:
- *   - builtins (`print`, `println`, `int_to_str`) are globals too; a
- *     top-level definition may not reuse their names, but locals may
- *     shadow them;
+ *   - builtins (`print`, `println`, `int_to_str`, `concat`) are globals
+ *     too; a top-level definition may not reuse their names, but locals
+ *     may shadow them;
  *   - every `def` can see every other top-level definition, in any order,
  *     so recursion and mutual recursion need no extra syntax. This is safe
  *     because a `def` is always a function and needs no evaluation;
@@ -85,8 +85,10 @@ compare_op  = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 
 additive    = multiplicative { ( "+" | "-" ) multiplicative } ;
 
+(* `/` rounds towards zero and `%` is its remainder, with the sign of the
+ * left operand: `-7 / 2` is -3 and `-7 % 2` is -1, as in Rust. *)
 multiplicative
-            = unary { ( "*" | "/" ) unary } ;
+            = unary { ( "*" | "/" | "%" ) unary } ;
 
 unary       = ( "-" | "!" ) unary
             | postfix ;
@@ -177,8 +179,8 @@ INT         = digit { digit } ;
  *   \\  backslash         \"  double quote       \0  NUL
  *
  * Any other escape is an error, e.g. `\q`, `\1`, `\x41` or `\u{41}`; write
- * `\\` for a literal backslash. Strings can be compared with `==` and `!=`;
- * there is no concatenation or ordering yet. *)
+ * `\\` for a literal backslash. Strings can be compared with `==` and `!=`
+ * and joined with the `concat` builtin; there is no ordering yet. *)
 STRING      = '"' { string_char | escape } '"' ;
 
 string_char = ? any character except '"', '\' and newline ? ;
@@ -190,7 +192,7 @@ letter      = "a" | ... | "z" | "A" | ... | "Z" ;
 digit       = "0" | ... | "9" ;
 
 (* Longest match: "==" before "=", "=>" before "=", "<=" before "<", etc. *)
-punctuation = "+" | "-" | "*" | "/" | "!"
+punctuation = "+" | "-" | "*" | "/" | "%" | "!"
             | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
             | "&&" | "||" | "=>"
             | "(" | ")" | "{" | "}" | "," | ";" ;
