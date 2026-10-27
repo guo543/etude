@@ -1,0 +1,9 @@
+Error: `println` is a builtin function
+   ╭─[ examples/errors/redefine_builtin.etd:1:5 ]
+   │
+ 1 │ def println(s) = s;
+   │     ───┬───
+   │        ╰───── cannot be redefined
+   │
+   │ Note: pick another name; a local `let` or parameter may shadow it
+───╯

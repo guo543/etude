@@ -1,0 +1,7 @@
+Error: mismatched types
+   ╭─[ examples/errors/builtin_argument_type.etd:1:22 ]
+   │
+ 1 │ def main() = println(1 + 2);
+   │                      ──┬──
+   │                        ╰──── expected `string`, found `int`
+───╯

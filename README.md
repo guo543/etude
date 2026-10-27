@@ -57,8 +57,11 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
 - **Evaluator** (`src/eval.rs`): a tree walker that borrows from the AST.
   Top-level `def`s live in a global table and are closures with an empty
   captured environment; locals live in an immutable linked environment, so
-  closures capture by sharing it. Values: integers, booleans, unit `()` and
-  functions. `&&` and `||` short-circuit; `if` evaluates only the chosen
+  closures capture by sharing it. Values: integers, booleans, unit `()`,
+  strings, functions and builtins. Builtins are an enum dispatched by
+  `match`: `print(s)` and `println(s)` write a string to stdout (the latter
+  with a newline) and `int_to_str(n)` formats an integer. `&&` and `||`
+  short-circuit; `if` evaluates only the chosen
   branch, so recursion terminates. Integer overflow, division by zero, wrong
   argument counts and type mismatches are runtime errors.
 - **Errors** (`src/diagnostic.rs`): reported with ariadne. Each error's
@@ -94,6 +97,8 @@ BLESS=1 cargo test --test examples          # rewrite expected example output
   in Rust and Swift.
 - **`&&` and `||` short-circuit.** `==` works on integers, booleans and unit;
   functions cannot be compared.
+- **Builtins are ordinary global functions** that cannot be redefined at
+  the top level; a local `let` or parameter may shadow them.
 - **The lexer never fails;** bad input becomes a token that the parser
   reports where it reaches it.
 
@@ -138,8 +143,8 @@ See "Done" above.
 
 - [x] `Value::Unit` and `Type::Unit`; `if` without `else` is unit.
 - [ ] `()` literal: `(` directly followed by `)` in `parse_atom`.
-- [ ] Built-in functions (`Value::Builtin` or a native case in `Closure`);
-      `print(x)` first, returning unit.
+- [x] Built-in functions (`Value::Builtin`): `print(s)` and `println(s)`,
+      returning unit, and `int_to_str(n)`.
 - [ ] Optional block tail (a missing tail means unit).
 
 ## 4. Global `let`

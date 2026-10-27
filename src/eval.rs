@@ -3,7 +3,13 @@ use crate::{
     diagnostic::Diagnostic,
     span::Span,
 };
-use std::{cell::Cell, collections::HashMap, fmt, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    fmt,
+    io::{self, Write},
+    rc::Rc,
+};
 
 /// How many calls may be in progress at once. Deeper recursion is reported
 /// as an error, the same in every build, so that a runaway program stops
@@ -75,6 +81,18 @@ pub enum EvalError {
         ty: Type,
         span: Span,
     },
+    /// A top-level `def` uses a builtin's name; the span is the name.
+    RedefinesBuiltin {
+        name: String,
+        span: Span,
+    },
+    /// Writing the program's output failed, e.g. because stdout was closed;
+    /// the span is the call that wrote. Holds the I/O error's message,
+    /// since `io::Error` is neither `Clone` nor `PartialEq`.
+    Output {
+        message: String,
+        span: Span,
+    },
 }
 
 /// The headline of the error; `diagnostic` adds the location and details.
@@ -94,6 +112,10 @@ impl fmt::Display for EvalError {
             EvalError::NotComparable { ty, .. } => {
                 write!(f, "values of type `{ty}` cannot be compared")
             }
+            EvalError::RedefinesBuiltin { name, .. } => {
+                write!(f, "`{name}` is a builtin function")
+            }
+            EvalError::Output { .. } => write!(f, "cannot write output"),
         }
     }
 }
@@ -133,7 +155,47 @@ impl EvalError {
                 .with_note("a program starts by calling `def main() = ...;`"),
             EvalError::MainHasParams(span) => at(span, "remove these parameters".into()),
             EvalError::NotComparable { span, .. } => at(span, "this is a function".into()),
+            EvalError::RedefinesBuiltin { span, .. } => at(span, "cannot be redefined".into())
+                .with_note("pick another name; a local `let` or parameter may shadow it"),
+            EvalError::Output { message, span } => at(span, message.clone()),
         }
+    }
+}
+
+/// A function implemented in Rust. Each one is bound in the globals under
+/// its `name`; `TreeEval::call_builtin` runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    Print,
+    Println,
+    IntToStr,
+}
+
+impl Builtin {
+    /// Every builtin, for pre-filling the globals.
+    const ALL: [Builtin; 3] = [Builtin::Print, Builtin::Println, Builtin::IntToStr];
+
+    fn name(self) -> &'static str {
+        match self {
+            Builtin::Print => "print",
+            Builtin::Println => "println",
+            Builtin::IntToStr => "int_to_str",
+        }
+    }
+
+    /// The type of each parameter. The evaluator checks the arguments
+    /// against these before running the builtin.
+    fn params(self) -> &'static [Type] {
+        match self {
+            Builtin::Print | Builtin::Println => &[Type::Str],
+            Builtin::IntToStr => &[Type::Int],
+        }
+    }
+}
+
+impl fmt::Display for Builtin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 
@@ -151,6 +213,7 @@ pub enum Value<'ast> {
     Bool(bool),
     Str(Rc<str>),
     Fun(Rc<Closure<'ast>>),
+    Builtin(Builtin),
 }
 
 impl Value<'_> {
@@ -161,6 +224,7 @@ impl Value<'_> {
             Value::Fun { .. } => Type::Fun,
             Value::Bool(_) => Type::Bool,
             Value::Str(_) => Type::Str,
+            Value::Builtin(_) => Type::Fun,
         }
     }
 }
@@ -182,6 +246,7 @@ impl fmt::Display for Value<'_> {
                 }
                 write!(f, ") => {}", closure.body)
             }
+            Value::Builtin(builtin) => write!(f, "BUILTIN {builtin}"),
         }
     }
 }
@@ -200,12 +265,16 @@ struct Env<'ast> {
 }
 
 impl<'ast> Env<'ast> {
-    fn bind(&self, id: &'ast Ident, value: Value<'ast>) -> Self {
+    fn empty() -> Self {
+        Env { head: None }
+    }
+
+    fn bind(self, id: &'ast Ident, value: Value<'ast>) -> Self {
         Env {
             head: Some(Rc::new(Binding {
                 id,
                 value,
-                parent: self.head.clone(),
+                parent: self.head,
             })),
         }
     }
@@ -228,12 +297,16 @@ impl<'ast> Env<'ast> {
     }
 }
 
-struct TreeEval<'ast> {
+struct TreeEval<'ast, 'out> {
     globals: HashMap<&'ast str, Value<'ast>>,
     /// Calls currently in progress. A `Cell` because evaluation takes
     /// `&self`.
     depth: Cell<usize>,
     max_depth: usize,
+    /// Where `println` writes. A `RefCell`, not a `Cell`, because writing
+    /// needs a `&mut` to the writer, and only `RefCell` lends one out
+    /// through a `&self`.
+    out: RefCell<&'out mut dyn Write>,
 }
 
 fn expect_int(value: Value<'_>, span: Span) -> Result<i64, EvalError> {
@@ -258,27 +331,20 @@ fn expect_bool(value: Value<'_>, span: Span) -> Result<bool, EvalError> {
     }
 }
 
-fn expect_fun<'ast>(value: Value<'ast>, span: Span) -> Result<Rc<Closure<'ast>>, EvalError> {
-    match value {
-        Value::Fun(b) => Ok(b),
-        other => Err(EvalError::TypeMismatch {
-            expected: Type::Fun,
-            actual: other.ty(),
-            span,
-        }),
-    }
-}
-
-impl<'ast> TreeEval<'ast> {
-    fn new() -> Self {
-        Self::with_max_depth(MAX_CALL_DEPTH)
+impl<'ast, 'out> TreeEval<'ast, 'out> {
+    fn new(out: &'out mut dyn Write) -> Self {
+        Self::with_max_depth(out, MAX_CALL_DEPTH)
     }
 
-    fn with_max_depth(max_depth: usize) -> Self {
+    fn with_max_depth(out: &'out mut dyn Write, max_depth: usize) -> Self {
         TreeEval {
-            globals: HashMap::new(),
+            globals: Builtin::ALL
+                .into_iter()
+                .map(|b| (b.name(), Value::Builtin(b)))
+                .collect(),
             depth: Cell::new(0),
             max_depth,
+            out: RefCell::new(out),
         }
     }
 
@@ -286,15 +352,22 @@ impl<'ast> TreeEval<'ast> {
         env.search(name).or_else(|| self.globals.get(name))
     }
 
-    fn eval_decl(&mut self, decl: &'ast Decl) {
+    fn eval_decl(&mut self, decl: &'ast Decl) -> Result<(), EvalError> {
         match &decl.kind {
             DeclKind::FunDecl { id, params, body } => {
+                if let Some(Value::Builtin(_)) = self.globals.get(id.name.as_str()) {
+                    return Err(EvalError::RedefinesBuiltin {
+                        name: id.name.clone(),
+                        span: id.span,
+                    });
+                }
                 let f = Value::Fun(Rc::new(Closure {
                     params,
                     body,
-                    env: Env { head: None },
+                    env: Env::empty(),
                 }));
                 self.globals.insert(&id.name, f);
+                Ok(())
             }
         }
     }
@@ -333,38 +406,15 @@ impl<'ast> TreeEval<'ast> {
                         span: expr.span,
                     })
             }
-            ExprKind::Call { callee, args } => {
-                let f = self.eval_expr(callee, env)?;
-                let closure = expect_fun(f, callee.span)?;
-                if closure.params.len() != args.len() {
-                    return Err(EvalError::ArgumentCountMismatch {
-                        expected: closure.params.len(),
-                        actual: args.len(),
-                        span: expr.span,
-                    });
-                }
-                // Start from what the closure captured, not the caller's
-                // environment: that is what makes scoping lexical.
-                let mut closure_env = closure.env.clone();
-                for (param, arg) in closure.params.iter().zip(args.iter()) {
-                    let v = self.eval_expr(arg, env)?;
-                    closure_env = closure_env.bind(param, v);
-                }
-
-                let depth = self.depth.get();
-                if depth == self.max_depth {
-                    return Err(EvalError::RecursionLimit {
-                        limit: self.max_depth,
-                        span: expr.span,
-                    });
-                }
-                // Nothing between `set` and the restore can return early,
-                // so the count stays right even when the body fails.
-                self.depth.set(depth + 1);
-                let result = self.eval_expr(closure.body, &closure_env);
-                self.depth.set(depth);
-                result
-            }
+            ExprKind::Call { callee, args } => match self.eval_expr(callee, env)? {
+                Value::Fun(closure) => self.call_closure(&closure, args, env, expr.span),
+                Value::Builtin(builtin) => self.call_builtin(builtin, args, env, expr.span),
+                other => Err(EvalError::TypeMismatch {
+                    expected: Type::Fun,
+                    actual: other.ty(),
+                    span: callee.span,
+                }),
+            },
             ExprKind::Unary(op, operand) => {
                 let e = self.eval_expr(operand, env)?;
                 match op {
@@ -435,13 +485,13 @@ impl<'ast> TreeEval<'ast> {
                             (Value::Bool(l), Value::Bool(r)) => l == r,
                             (Value::Str(l), Value::Str(r)) => l == r,
                             (Value::Unit, Value::Unit) => true,
-                            (Value::Fun(_), _) => {
+                            (Value::Fun(_) | Value::Builtin(_), _) => {
                                 return Err(EvalError::NotComparable {
                                     ty: Type::Fun,
                                     span: lhs.span,
                                 });
                             }
-                            (_, Value::Fun(_)) => {
+                            (_, Value::Fun(_) | Value::Builtin(_)) => {
                                 return Err(EvalError::NotComparable {
                                     ty: Type::Fun,
                                     span: rhs.span,
@@ -497,9 +547,99 @@ impl<'ast> TreeEval<'ast> {
         }
     }
 
+    /// Call `closure` with `args`, evaluated in the caller's `env`; `span`
+    /// is the whole call.
+    fn call_closure(
+        &self,
+        closure: &Closure<'ast>,
+        args: &'ast [Expr],
+        env: &Env<'ast>,
+        span: Span,
+    ) -> Result<Value<'ast>, EvalError> {
+        if closure.params.len() != args.len() {
+            return Err(EvalError::ArgumentCountMismatch {
+                expected: closure.params.len(),
+                actual: args.len(),
+                span,
+            });
+        }
+        // Start from what the closure captured, not the caller's
+        // environment: that is what makes scoping lexical.
+        let mut closure_env = closure.env.clone();
+        for (param, arg) in closure.params.iter().zip(args) {
+            let v = self.eval_expr(arg, env)?;
+            closure_env = closure_env.bind(param, v);
+        }
+
+        let depth = self.depth.get();
+        if depth == self.max_depth {
+            return Err(EvalError::RecursionLimit {
+                limit: self.max_depth,
+                span,
+            });
+        }
+        // Nothing between `set` and the restore can return early,
+        // so the count stays right even when the body fails.
+        self.depth.set(depth + 1);
+        let result = self.eval_expr(closure.body, &closure_env);
+        self.depth.set(depth);
+        result
+    }
+
+    /// Call `builtin` with `args`, evaluated in the caller's `env`; `span`
+    /// is the whole call. Builtins cannot recurse, so they do not count
+    /// towards the call depth.
+    fn call_builtin(
+        &self,
+        builtin: Builtin,
+        args: &'ast [Expr],
+        env: &Env<'ast>,
+        span: Span,
+    ) -> Result<Value<'ast>, EvalError> {
+        let params = builtin.params();
+        if params.len() != args.len() {
+            return Err(EvalError::ArgumentCountMismatch {
+                expected: params.len(),
+                actual: args.len(),
+                span,
+            });
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for (&expected, arg) in params.iter().zip(args) {
+            let v = self.eval_expr(arg, env)?;
+            if v.ty() != expected {
+                return Err(EvalError::TypeMismatch {
+                    expected,
+                    actual: v.ty(),
+                    span: arg.span,
+                });
+            }
+            values.push(v);
+        }
+
+        match (builtin, values.as_slice()) {
+            (Builtin::Print, [Value::Str(s)]) => {
+                write!(self.out.borrow_mut(), "{s}").map_err(|e| EvalError::Output {
+                    message: e.to_string(),
+                    span,
+                })?;
+                Ok(Value::Unit)
+            }
+            (Builtin::Println, [Value::Str(s)]) => {
+                writeln!(self.out.borrow_mut(), "{s}").map_err(|e| EvalError::Output {
+                    message: e.to_string(),
+                    span,
+                })?;
+                Ok(Value::Unit)
+            }
+            (Builtin::IntToStr, [Value::Int(n)]) => Ok(Value::Str(n.to_string().into())),
+            _ => unreachable!("the arguments were checked against `params`"),
+        }
+    }
+
     pub fn eval(&mut self, ast: &'ast Ast) -> Result<Value<'ast>, EvalError> {
         for decl in &ast.decls {
-            self.eval_decl(decl);
+            self.eval_decl(decl)?;
         }
         let main = self.globals.get("main").ok_or(EvalError::MissingMain)?;
 
@@ -518,8 +658,17 @@ impl<'ast> TreeEval<'ast> {
 }
 
 /// Run a program: define every top-level function, then call `main`.
-pub fn eval<'ast>(ast: &'ast Ast) -> Result<Value<'ast>, EvalError> {
-    TreeEval::new().eval(ast)
+/// The program's output goes to stdout.
+pub fn eval(ast: &Ast) -> Result<Value<'_>, EvalError> {
+    eval_with_output(ast, &mut io::stdout().lock())
+}
+
+/// Like `eval`, but the program's output goes to `out`.
+pub fn eval_with_output<'ast>(
+    ast: &'ast Ast,
+    out: &mut dyn Write,
+) -> Result<Value<'ast>, EvalError> {
+    TreeEval::new(out).eval(ast)
 }
 
 #[cfg(test)]
@@ -533,7 +682,7 @@ mod test {
 
     fn error(src: &str) -> EvalError {
         let ast = Parser::new(Lexer::new(src)).parse().unwrap();
-        eval(&ast).unwrap_err()
+        eval_with_output(&ast, &mut io::sink()).unwrap_err()
     }
 
     fn text(src: &str, span: Span) -> &str {
@@ -549,7 +698,7 @@ mod test {
     /// Run `src` with a lower call limit, so tests stay small and fast.
     fn eval_with_max_depth(src: &str, max_depth: usize) -> Result<String, EvalError> {
         let ast = Parser::new(Lexer::new(src)).parse().unwrap();
-        TreeEval::with_max_depth(max_depth)
+        TreeEval::with_max_depth(&mut io::sink(), max_depth)
             .eval(&ast)
             .map(|v| v.to_string())
     }
@@ -768,20 +917,21 @@ mod test {
             span: Span { start: 0, end: 0 },
         };
         let params = vec![];
-        let captured = Env { head: None }.bind(&x, Value::Int(5));
+        let captured = Env::empty().bind(&x, Value::Int(5));
         let closure = Value::Fun(Rc::new(Closure {
             params: &params,
             body,
             env: captured,
         }));
 
-        let mut interp = TreeEval::new();
+        let mut sink = io::sink();
+        let mut interp = TreeEval::new(&mut sink);
         interp.globals.insert("g", closure);
         let call = Parser::new(Lexer::new("def main() = g();"))
             .parse()
             .unwrap();
         let DeclKind::FunDecl { body: call, .. } = &call.decls[0].kind;
-        let result = interp.eval_expr(call, &Env { head: None }).unwrap();
+        let result = interp.eval_expr(call, &Env::empty()).unwrap();
         assert!(matches!(result, Value::Int(6)), "got {result:?}");
     }
 
@@ -1254,5 +1404,156 @@ mod test {
         ));
         let (_, label) = error(src).diagnostic().label.unwrap();
         assert_eq!(label, "expected `string`, found `int`");
+    }
+
+    /// Run `src`, returning the printed result and what the program wrote.
+    fn run(src: &str) -> (String, String) {
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        let mut out = Vec::new();
+        let value = eval_with_output(&ast, &mut out).unwrap().to_string();
+        (value, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn println_writes_the_raw_string_and_a_newline() {
+        let src = r#"def main() = { println("a\tb"); println("say \"hi\"") };"#;
+        assert_eq!(run(src), ("()".into(), "a\tb\nsay \"hi\"\n".into()));
+        assert_eq!(run(r#"def main() = println("");"#).1, "\n");
+    }
+
+    #[test]
+    fn output_follows_evaluation_order() {
+        let src = r#"
+            def say(s, n) = { println(s); n };
+            def main() = say("left", 1) + say("right", 2);
+        "#;
+        assert_eq!(run(src), ("3".into(), "left\nright\n".into()));
+        // Only the branch taken runs.
+        let src = r#"def main() = if false { println("no") } else { println("yes") };"#;
+        assert_eq!(run(src).1, "yes\n");
+    }
+
+    #[test]
+    fn int_to_str_formats_in_decimal() {
+        assert_eq!(run("def main() = int_to_str(42);").0, r#""42""#);
+        assert_eq!(run("def main() = int_to_str(-7);").0, r#""-7""#);
+        let src = "def main() = int_to_str(-9223372036854775807 - 1);";
+        assert_eq!(run(src).0, r#""-9223372036854775808""#);
+        let src = "def main() = println(int_to_str(10 * 10));";
+        assert_eq!(run(src).1, "100\n");
+    }
+
+    #[test]
+    fn builtins_are_values() {
+        assert_eq!(run("def main() = println;").0, "BUILTIN println");
+        let src = "def apply(f, x) = f(x); def main() = apply(int_to_str, 5);";
+        assert_eq!(run(src).0, r#""5""#);
+        let src = r#"def main() = { let p = println; p("via let") };"#;
+        assert_eq!(run(src).1, "via let\n");
+    }
+
+    #[test]
+    fn builtins_check_argument_count() {
+        let src = "def main() = println();";
+        assert!(matches!(
+            error(src),
+            EvalError::ArgumentCountMismatch { expected: 1, actual: 0, span }
+                if text(src, span) == "println()"
+        ));
+        let src = r#"def main() = int_to_str(1, 2);"#;
+        assert!(matches!(
+            error(src),
+            EvalError::ArgumentCountMismatch {
+                expected: 1,
+                actual: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn builtins_check_argument_types() {
+        let src = "def main() = println(1 + 2);";
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Str, actual: Type::Int, span }
+                if text(src, span) == "1 + 2"
+        ));
+        let src = r#"def main() = int_to_str("1");"#;
+        assert!(matches!(
+            error(src),
+            EvalError::TypeMismatch { expected: Type::Int, actual: Type::Str, span }
+                if text(src, span) == r#""1""#
+        ));
+    }
+
+    #[test]
+    fn builtins_cannot_be_compared() {
+        let src = "def main() = println == println;";
+        assert!(matches!(
+            error(src),
+            EvalError::NotComparable { ty: Type::Fun, span }
+                if span.start == src.find("println").unwrap()
+        ));
+        let src = "def main() = 1 == int_to_str;";
+        assert!(matches!(
+            error(src),
+            EvalError::NotComparable { ty: Type::Fun, span }
+                if text(src, span) == "int_to_str"
+        ));
+    }
+
+    #[test]
+    fn top_level_def_cannot_redefine_a_builtin() {
+        let src = "def main() = 1; def println(s) = s;";
+        assert!(matches!(
+            error(src),
+            EvalError::RedefinesBuiltin { name, span }
+                if name == "println" && span.start == src.find("println").unwrap()
+                    && text(src, span) == "println"
+        ));
+    }
+
+    #[test]
+    fn locals_may_shadow_builtins() {
+        let src = "def main() = { let println = fun(x) => x + 1; println(1) };";
+        assert_eq!(run(src), ("2".into(), String::new()));
+        let src = "def f(int_to_str) = int_to_str * 2; def main() = f(3);";
+        assert_eq!(run(src).0, "6");
+    }
+
+    #[test]
+    fn output_errors_point_at_the_call() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("stream closed"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let src = r#"def main() = println("x");"#;
+        let ast = Parser::new(Lexer::new(src)).parse().unwrap();
+        let err = eval_with_output(&ast, &mut Closed).unwrap_err();
+        assert!(matches!(
+            &err,
+            EvalError::Output { message, span }
+                if message == "stream closed" && text(src, *span) == r#"println("x")"#
+        ));
+    }
+
+    #[test]
+    fn builtin_names_are_unique() {
+        let mut names: Vec<_> = Builtin::ALL.iter().map(|b| b.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Builtin::ALL.len());
+    }
+
+    #[test]
+    fn print_writes_without_a_newline() {
+        let src = r#"def main() = { print("a"); print("b"); println("c"); print("d") };"#;
+        assert_eq!(run(src), ("()".into(), "abc\nd".into()));
     }
 }

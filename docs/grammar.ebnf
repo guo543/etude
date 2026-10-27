@@ -32,6 +32,9 @@
  *     `def f() = ...` delays the effects until `f()` is called.
  *
  * Visibility:
+ *   - builtins (`print`, `println`, `int_to_str`) are globals too; a
+ *     top-level definition may not reuse their names, but locals may
+ *     shadow them;
  *   - every `def` can see every other top-level definition, in any order,
  *     so recursion and mutual recursion need no extra syntax. This is safe
  *     because a `def` is always a function and needs no evaluation;

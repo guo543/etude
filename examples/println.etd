@@ -1,0 +1,16 @@
+// `println` writes a string and a newline, and returns `()`.
+def countdown(n) = if n == 0 {
+    println("liftoff!")
+} else {
+    println(int_to_str(n));
+    countdown(n - 1)
+};
+
+def main() = {
+    println("counting down:");
+    countdown(3);
+    // Builtins are values like any other function.
+    let say = println;
+    say("tab:\tquote:\"");
+    42
+};
